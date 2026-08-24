@@ -1,0 +1,26 @@
+cluster:
+  mkdir -p logs/{rule} &&
+  sbatch
+    --account=""
+    --time={resources.time}
+    -c {resources.cpus}
+    --mem=2000
+    --job-name=smk-{rule}-{wildcards}
+    --output=logs/{rule}/{rule}-{wildcards}-%j.out
+    --error=logs/{rule}/{rule}-{wildcards}-%j.err
+default-resources:
+  - account="palab"
+  - time=720
+  - cpus=1
+  - mem=2000
+restart-times: 0
+max-jobs-per-second: 20
+max-status-checks-per-second: 1
+local-cores: 1
+latency-wait: 10
+jobs: 250
+keep-going: True
+rerun-incomplete: True
+printshellcmds: True
+scheduler: greedy
+use-conda: True

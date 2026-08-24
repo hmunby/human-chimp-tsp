@@ -1,0 +1,16 @@
+Region (hg19),Gene,Assignment,TSPs,Physical span (bp),Genetic span (x10-3 cM),Variant type,BMAP decile,Literature,GWAS (L2G effector)
+"chr21:41,205,924-41,208,874",HMGN1,molqtl,12,2950,0.720,intergenic,9,Bitarello et al. 2018,—
+"chr5:8,017,470-8,024,003",MTRR,molqtl,11,6533,3.251,intergenic,9,Leffler et al. 2013; Bitarello et al. 2018,—
+"chr4:144,655,489-144,662,054",GYPB,l2g,8,6565,2.243,intron,4,Bitarello et al. 2018; Leffler et al. 2013; Rocha et al. 2026,Lactate levels; Total bilirubin levels (+20 more)
+"chr4:115,378,668-115,379,737",UGT8,l2g,7,1069,0.021,intergenic,7,Bitarello et al. 2018,Calcium levels; Urolithiasis
+"chr4:57,918,296-57,919,705",IGFBP7,l2g,6,196 / 484,0.565 / 1.245*,intron,9,Leffler et al. 2013; Bitarello et al. 2018; DeGiorgio et al. 2014; Rocha et al. 2026,Height
+"chr4:71,210,148-71,210,970",MUC7,molqtl,5,822,0.222,intergenic,7,Bitarello et al. 2018,—
+"chr2:1,138,967-1,139,647",SH3YL1,molqtl,4,680,1.434,intron,8,Bitarello et al. 2018; DeGiorgio et al. 2014; Rocha et al. 2026,—
+"chr1:106,125,135-106,131,147",LINC01676,molqtl,3,6012,3.899,"downstream_gene, intergenic",8,—,Body mass index; Weight (+1 more)
+"chr11:24,791,431-24,792,057",LUZP2,nearest,3,626,0.009,intron,10,Bitarello et al. 2018; DeGiorgio et al. 2014,—
+"chr2:237,968,214-237,968,421",COPS8,nearest,3,207,0.058,upstream_gene,10,—,—
+"chr4:56,144,663-56,147,967",SRD5A3,molqtl,3,3304,0.667,intergenic,4,Leffler et al. 2013,—
+"chr5:16,919,819-16,919,992",MYO10,l2g,2,173,0.133,upstream_gene,10,—,Heel bone mineral density
+"chr10:25,593,349-25,593,541",GPR158,nearest,2,192,0.101,intron,8,Rocha et al. 2026,—
+"chr10:67,278,595-67,279,509",CTNNA3,l2g,2,914,0.001,intergenic,7,Bitarello et al. 2018,Testosterone levels; Total testosterone levels (+8 more)
+"chr5:29,637,400-29,637,695",CDH6,nearest,2,295,0.221,intergenic,9,—,—

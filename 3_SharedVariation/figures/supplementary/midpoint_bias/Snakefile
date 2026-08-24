@@ -1,0 +1,52 @@
+import numpy as np
+
+N_RUNS = 100
+GOAL_N = 1_000_000
+HUMAN_NE = 10_000
+FREQUENCY_THRESHOLD = 0.01
+SEQUENCE_LENGTH = 1_000_000  # 1 Mb
+
+rule all:
+    input:
+        "results/compare_ages.pdf"
+
+rule simulate_neutral:
+    output:
+        "results/neutral_sim_{run}.pkl"
+    params:
+        goal_n = GOAL_N,
+        human_Ne = HUMAN_NE,
+        frequency_threshold = FREQUENCY_THRESHOLD,
+        sequence_length = SEQUENCE_LENGTH
+    resources:
+        time = 720,
+        cpus = 1,
+        mem = 4000
+    script:
+        "scripts/simulate_neutral.py"
+
+rule combine_sims:
+    input:
+        expand("results/neutral_sim_{run}.pkl", run=range(N_RUNS))
+    output:
+        "results/neutral_sim_combined.pkl"
+    resources:
+        time = 60,
+        cpus = 1,
+        mem = 8000
+    run:
+        import pickle
+        combined = []
+        for f in input:
+            with open(f, "rb") as fh:
+                combined.extend(pickle.load(fh))
+        with open(output[0], "wb") as fh:
+            pickle.dump(combined, fh)
+
+rule compare_ages:
+    input:
+        "results/neutral_sim_combined.pkl"
+    output:
+        "results/compare_ages.pdf"
+    script:
+        "scripts/compare_ages.py"

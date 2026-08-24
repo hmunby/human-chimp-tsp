@@ -1,0 +1,370 @@
+# Pipeline to process and filter chimpanzee VCF files and lift them to the human reference genome. 
+
+#### INPUT PATHS (edit) ####
+# Raw joint-genotyped VCFs from ../2_VariantCalling/ (one per chromosome: genotyped.chr<chrom>.vcf.gz)
+RAW_VCF_DIR = "raw_vcf"
+
+# Inputs 
+RENAME_CHIMP = "misc_files/chr_chimp.txt"
+fam = "misc_files/chimp59_pedigree.fam"
+unrelated = "misc_files/chimp59_founder_sample_IDs.txt"
+dups = "segmental_duplication_track/processed_bed/t2t_pantro6_seg_dups_resolved_no_chr.merged.bed"
+RENAME_HG19 = "misc_files/chr_hg19_b37.txt"          # hg19 -> b37 chromosome names
+CHROM_SIZES = "misc_files/panTro6.chrom_lengths"     # SOURCE reference chromosome sizes (bp)
+
+SOURCE_REF = "resources/panTro6.simple_chrom.no_chr.fa"       # panTro6 (GCA_002880755.3), no "chr" prefix
+TARGET_REF = "resources/hg19/ucsc.hg19.fasta"                 # hg19 target reference
+CHAIN = "resources/chains/panTro6ToHg19.no_chr.over.chain"    # UCSC liftOver chain (panTro6 -> hg19)
+REVERSE_CHAIN = "resources/chains/hg19ToPanTro6.over.chain"   # UCSC liftOver chain (hg19 -> panTro6)
+
+# Chimpanzee simple chromosome names
+chroms = ["1","2A","2B","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","X"]
+
+hg19_chrom_file = "misc_files/hg19_chrom_names.txt"
+
+AC = 3 # Allele count cutoff (min) to keep a site for liftover and downstream analyses.
+
+# Get list of hg19 chromosomes
+with open(hg19_chrom_file, "r") as f:
+    hg19chroms = f.read().splitlines()
+    hg19chroms = ",".join(hg19chroms)
+
+
+### RULES ###
+rule all:
+    input:
+        "8_human_ref/genotyped.chimp43.hg19.b37.vcf.gz",
+        "liftover/liftover_stats.txt",
+        "stats/site_counts.txt"
+
+### FILTERING ### 
+
+# 1. Preprocessing: Rename chroms, set missing genotypes to "./." and remove multiallelic sites & indels 
+rule biallelic:
+    input:
+        vcf = RAW_VCF_DIR + "/genotyped.chr{chrom}.vcf.gz",
+        rename_table = RENAME_CHIMP
+    output:
+        vcf = "1_biallelic/genotyped.chimp59.chr{chrom}.vcf.gz",
+        vcf_index = "1_biallelic/genotyped.chimp59.chr{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -m2 -M2 -v snps -Oz {input.vcf} | bcftools annotate --rename-chrs {input.rename_table} -Oz | bcftools +setGT -Oz -o {output.vcf} -- -t q -n . -i 'FORMAT/DP=0 | SMPL_MAX(FORMAT/PL)=0'
+        tabix {output.vcf}
+        """
+
+# 2. Filtering
+rule vcfcleaner:
+    input:
+        vcf = rules.biallelic.output.vcf
+    output:
+        vcf = "2_filtered/genotyped.chimp59.chr{chrom}.vcf.gz",
+        vcf_index = "2_filtered/genotyped.chimp59.chr{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        # Get name of unzipped output VCF
+        vcf=$(echo {output.vcf} | sed 's/.vcf.gz//')
+        # Run vcfCleaner
+        vcfCleaner gatk \
+            -vcf {input.vcf} \
+            -out $vcf \
+            -biallelic \
+            -rmvIndels \
+            -maxcov 2850 \
+            -mincov 950 \
+            -mingeno 50 \
+            -rms_mapq 40 \
+            -mapqRankSum 6 \
+            -posbias 6 \
+            -strandbias 60 \
+            -baseqbias 6 \
+            -qual 30 \
+            -varq_depth 2 \
+            -hetexcess 28.69 \
+            -varonly \
+            -maf 0 \
+            -verbose 0
+        # bgzip the output VCF
+        bgzip ${{vcf}}.vcf
+        # Index the filtered VCF
+        tabix {output.vcf}
+        """
+
+# 3. Mendelian error filtering 
+rule mendelian:
+    input:
+        vcf = rules.vcfcleaner.output.vcf,
+        fam = fam
+    output:
+        vcf = "3_mendelian/genotyped.chimp59.chr{chrom}.vcf.gz",
+        vcf_index = "3_mendelian/genotyped.chimp59.chr{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        # Make directory to store plink intermediates (if it doesn't exist)
+        mkdir -p plink_files
+        # Make plink binaries 
+        plink --vcf {input.vcf} --make-bed --set-missing-var-ids @:# --allow-extra-chr --out plink_files/{wildcards.chrom}_binary
+        # Run plink mendelian error analysis
+        plink --bed plink_files/{wildcards.chrom}_binary.bed --bim plink_files/{wildcards.chrom}_binary.bim --allow-extra-chr --fam {input.fam} --mendel --out plink_files/{wildcards.chrom}_out
+        # Get tab-delim file of sites to keep from .lmendel output (those with 0 mendelian errors only, modify first awk to change)
+        awk '$3 < 1' plink_files/{wildcards.chrom}_out.lmendel | awk '{{print $2}}' | sed "s/:/\\t/g" > plink_files/{wildcards.chrom}.keep_sites.txt
+        # Remove fail sites from VCF
+        bcftools view -R plink_files/{wildcards.chrom}.keep_sites.txt -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+### REMOVE RELATED ###
+# 4. Subset to unrelated individuals
+rule remove_related:
+    input:
+        vcf = rules.mendelian.output.vcf,
+        unrelated = unrelated
+    output:
+        vcf = "4_unrelated/genotyped.chimp43.chr{chrom}.vcf.gz",
+        vcf_index = "4_unrelated/genotyped.chimp43.chr{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -S {input.unrelated} -Oz {input.vcf} | bcftools +fill-tags -Oz -o {output.vcf} -- -t all
+        tabix {output.vcf}
+        """
+
+### PARALOG FILTERS ###
+# 5. Remove segions in segmental duplications (identified using T2T chimp genome)
+rule segdup:
+    input:
+        vcf = rules.remove_related.output.vcf,
+        segdups = dups
+    output:
+        vcf = "5_SD_filtered/genotyped.chimp43.chr{chrom}.vcf.gz",
+        vcf_index = "5_SD_filtered/genotyped.chimp43.chr{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -T ^{input.segdups} -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+### LIFTOVER TO HUMAN REFERENCE ###
+# 6. Implement allele count cutoff prior to liftover
+rule min_ac_cutoff:
+    input:
+        vcf = rules.segdup.output.vcf
+    output:
+        vcf = "6_AC_filtered_input/genotyped.chimp43.chr{chrom}.vcf.gz"
+    params:
+        AC = AC
+    shell:
+        r"""
+        bcftools view -i 'AC > {params.AC}' -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+# 7. Combine all chromosomes into one VCF and add IDs 
+rule combine_chroms:
+    input:
+        expand("6_AC_filtered_input/genotyped.chimp43.chr{chrom}.vcf.gz", chrom=chroms)
+    output:
+        vcf = "7_combined/genotyped.chimp43.vcf.gz"
+    shell:
+        r"""
+        bcftools concat {input} -Oz | bcftools annotate --set-id +'%CHROM\_%POS\_%REF\_%ALT' -Oz -o {output.vcf}
+        tabix {output.vcf}
+        """
+
+# 8. Initial Liftover to hg19
+# Initial liftover to new reference
+rule liftover:
+    input:
+        vcf = rules.combine_chroms.output.vcf
+    output:
+        vcf = "liftover/raw/genotyped.chimp43.hg19.vcf.gz",
+        reject_vcf = "liftover/raw/genotyped.chimp43.rejected.vcf.gz",
+        vcf_idx = "liftover/raw/genotyped.chimp43.hg19.vcf.gz.tbi",
+        reject_vcf_idx = "liftover/raw/genotyped.chimp43.rejected.vcf.gz.tbi"
+    shell:
+        r"""bcftools +liftover -Ou {input.vcf} -- \
+        -s {SOURCE_REF} \
+        -f {TARGET_REF} \
+        -c {CHAIN} \
+        -Oz --reject {output.reject_vcf} | bcftools sort --temp-dir tmp/ -Oz -o {output.vcf}
+        tabix {output.vcf}
+        tabix {output.reject_vcf}
+        """
+
+# 9. Clean liftover
+rule clean_liftover:
+    input:
+        vcf = rules.liftover.output.vcf
+    output:
+        vcf = "liftover/cleaned/genotyped.chimp43.hg19.vcf.gz",
+        vcf_index = "liftover/cleaned/genotyped.chimp43.hg19.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -m2 -M2 -v snps -r {hg19chroms} -Oz {input.vcf} | \
+        bcftools +fill-tags -Oz -o {output.vcf} -- -t AC,AN,AF
+        tabix {output.vcf}
+        """
+
+# 10. Reverse liftover
+rule reverse_lift:
+    input: 
+        vcf = rules.clean_liftover.output.vcf
+    output: 
+        vcf = "liftover/reverse/genotyped.chimp43.hg19.vcf.gz",
+        vcf_index = "liftover/reverse/genotyped.chimp43.hg19.vcf.gz.tbi",
+        reject_vcf = "liftover/reverse/genotyped.chimp43.hg19.rejected.vcf.gz",
+        reject_vcf_index = "liftover/reverse/genotyped.chimp43.hg19.rejected.vcf.gz.tbi",
+        sites_file = "liftover/reverse/genotyped.chimp43.hg19.inconsistent_sites.txt"
+    shell: 
+        r"""
+        bcftools +liftover -Ou {input.vcf} -- \
+        -s {TARGET_REF} \
+        -f {SOURCE_REF} \
+        -c {REVERSE_CHAIN} \
+        -Oz --reject {output.reject_vcf} | bcftools sort --temp-dir tmp/ -Oz -o {output.vcf}
+        tabix {output.vcf}
+        tabix {output.reject_vcf}
+        bcftools query -f "%POS\t%ID\n" {output.vcf} | awk '$2 !~ $1 {{ print $2 }}' > {output.sites_file}
+        """
+
+# 11. Filter out sites failing reverse lift (both rejected and sites with inconsistent position)
+rule filter_reverse:
+    input:
+        vcf = rules.clean_liftover.output.vcf,
+        sites = rules.reverse_lift.output.sites_file,
+        rejected = rules.reverse_lift.output.reject_vcf
+    output:
+        vcf = "liftover/reverse_checked/genotyped.chimp43.hg19.vcf.gz",
+        vcf_index = "liftover/reverse_checked/genotyped.chimp43.hg19.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -T ^{input.rejected} -i'ID!=@{input.sites}' -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+# 12. Region lift 
+# Lift region around each variant to new reference to check for contiguity.
+# Check that entire region +/- X bp around variant can be uniquely lifted over.
+# Remove regions that fail from lifted VCF that has passed other checks. 
+rule region_lift:
+    input:
+        vcf = rules.reverse_lift.output.vcf
+    output:
+        bed_slopped = "liftover/region_lift/genotyped.reverse.chimp43.slopped_100bp.bed",
+        bed_lifted = "liftover/region_lift/lifted_regions.bed",
+        bed_lifted_failed = "liftover/region_lift/failed_regions.bed",
+        rejected_IDs = "liftover/region_lift/failed_lift.IDs.txt"
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS0\t%END\t%ID\n' {input.vcf} | \
+        bedtools slop -g {CHROM_SIZES} -b 100 > {output.bed_slopped}
+        liftOver {output.bed_slopped} {CHAIN} {output.bed_lifted} {output.bed_lifted_failed}
+        grep -v '^#' {output.bed_lifted_failed} | cut -f4 > {output.rejected_IDs}
+        """
+
+# 13. Remove failed regions 
+rule remove_failed_regions:
+    input:
+        vcf = rules.filter_reverse.output.vcf,
+        failed = rules.region_lift.output.rejected_IDs
+    output:
+        vcf = "liftover/final_cleaned/genotyped.chimp43.hg19.vcf.gz",
+        vcf_index = "liftover/final_cleaned/genotyped.chimp43.hg19.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -e"ID=@{input.failed}" -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+# 14. Rename chromosomes to those used in 1000GP (b37 format)
+rule rename_chr:
+    input:
+        vcf = rules.remove_failed_regions.output.vcf,
+        rename = RENAME_HG19
+    output:
+        vcf = "8_human_ref/genotyped.chimp43.hg19.b37.vcf.gz",
+        vcf_index = "8_human_ref/genotyped.chimp43.hg19.b37.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools annotate --rename-chrs {input.rename} -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+# Generate liftover stats 
+rule liftover_stats:
+    input:
+        step_1 = rules.liftover.output.vcf,
+        step_2 = rules.clean_liftover.output.vcf,
+        step_3 = rules.filter_reverse.output.vcf,
+        step_4 = rules.remove_failed_regions.output.vcf
+    output:
+        stats = "liftover/liftover_stats.txt"
+    shell:
+        r"""
+        # Write header to stats file
+        echo "Step  Total_sites" > {output.stats}
+        for i in {input}
+        do
+            # Get number of sites in VCF
+            total=$(bcftools view -H $i | wc -l)
+            # Write step name and number of sites to stats file
+            echo "$i    $total" >> {output.stats}
+        done
+        """
+
+# Calc. number of sites at every step - and output a tab delim table of Step, Total_sites, Removed_sites
+rule site_counts:
+    input:
+        start_vcf = RAW_VCF_DIR,
+        biallelic = "1_biallelic",
+        filtered = "2_filtered",
+        mendelian = "3_mendelian",
+        unrelated = "4_unrelated",
+        segdup = "5_SD_filtered",
+        AC = "6_AC_filtered_input",
+        combined = "7_combined",
+        human_ref = "8_human_ref"
+    output:
+        counts = "stats/site_counts.txt"
+    shell:
+        r"""
+        # Write header to stats file
+        echo "Step  Total_sites Removed_sites" > {output.counts}
+        #### Input - Calculate number of sites summed across chromosomes for each step
+        sites_input=$(zcat {input.start_vcf}/*.vcf.gz | grep -v "^#" | wc -l)
+        # Write to file
+        echo "Input    $sites_input 0" >> {output.counts}
+        ### 1. Biallelic SNPs 
+        sites_biallelic=$(zcat {input.biallelic}/*.vcf.gz | grep -v "^#" | wc -l)
+        # Calc. diff from input
+        removed_biallelic=$((sites_input - sites_biallelic))
+        # Write to file
+        echo "{input.biallelic}    $sites_biallelic $removed_biallelic" >> {output.counts}
+        ### 2. Filtering
+        sites_filtered=$(zcat {input.filtered}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_filtered=$((sites_biallelic - sites_filtered))
+        echo "{input.filtered}    $sites_filtered $removed_filtered" >> {output.counts}
+        ### 3. Mendelian
+        sites_mendelian=$(zcat {input.mendelian}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_mendelian=$((sites_filtered - sites_mendelian))
+        echo "{input.mendelian}    $sites_mendelian $removed_mendelian" >> {output.counts}
+        ### 4. Unrelated
+        sites_unrelated=$(zcat {input.unrelated}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_unrelated=$((sites_mendelian - sites_unrelated))
+        echo "{input.unrelated}    $sites_unrelated $removed_unrelated" >> {output.counts}
+        ### 5. Segdup
+        sites_segdup=$(zcat {input.segdup}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_segdup=$((sites_unrelated - sites_segdup))
+        echo "{input.segdup}    $sites_segdup $removed_segdup" >> {output.counts}
+        ### 6. AC filter
+        sites_AC=$(zcat {input.AC}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_AC=$((sites_segdup - sites_AC))
+        echo "{input.AC}    $sites_AC $removed_AC" >> {output.counts}
+        ### 7. Combined
+        sites_combined=$(zcat {input.combined}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_combined=$((sites_AC - sites_combined))
+        echo "{input.combined}    $sites_combined $removed_combined" >> {output.counts}
+        ### 8. Human reference
+        sites_human_ref=$(zcat {input.human_ref}/*.vcf.gz | grep -v "^#" | wc -l)
+        removed_human_ref=$((sites_combined - sites_human_ref))
+        echo "{input.human_ref}    $sites_human_ref $removed_human_ref" >> {output.counts}
+        """

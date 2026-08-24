@@ -1,0 +1,2 @@
+##INFO=<ID=CHIMP_AF,Number=1,Type=Float,Description="Allele frequency in chimpanzee callset">
+##INFO=<ID=CHIMP_ID,Number=1,Type=String,Description="Position of SNP in PanTro6 reference assembly">

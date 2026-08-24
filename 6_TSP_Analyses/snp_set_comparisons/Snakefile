@@ -1,0 +1,69 @@
+# Annotate each SNP set with phyloP conservation scores (hg19/b37).
+#
+# Produces the per-chromosome score tables that phylop_ecdf.py, phylop_stats.py and
+# phylop_confound_test.py read. Three SNP sets are scored against two phyloP tracks:
+#
+#   sets   : all human-chimp shared SNPs, 1000GP MAF>=5%, chimpanzee AC>=3
+#   tracks : phylop/       36-eutherian-mammal EPO, human sequence EXCLUDED  (main figure)
+#            phylop_46way/ UCSC 46-way placental, human INCLUDED             (comparison)
+#
+# The "old shared" and TSP sets are SUBSETS of the shared SNPs, so they are not scored
+# separately -- the analysis scripts look their positions up in the shared table, which
+# guarantees identical treatment.
+
+#### INPUT PATHS (edit) ####
+# Human-chimp shared variants from ../../3_SharedVariation/1_Intersect/
+SHARED_VCF = "resources/shared_variants.SD_CNV_DUP_filtered.vcf.gz"
+
+# 1000 Genomes biallelic sites, MAF >= 5%, from ../../2_1000GenomesProjectProcessing/
+TGP_MAF5_VCF = "resources/1000GP.wgs.biallelic.sites.MAF05.vcf.gz"
+
+# Chimpanzee variants lifted to hg19/b37, from ../../1_ChimpanzeeCallingFiltering/3_Filtering/
+CHIMP_VCF = "resources/genotyped.chimp43.hg19.b37.vcf.gz"
+
+# phyloP tracks, one file per chromosome: CHROM<TAB>POS<TAB>SCORE (not bundled; see README)
+PHYLOP_NO_HUMAN = "resources/phylop_36mammal_no_human/Compara.36_eutherian_mammals_EPO_LOW_COVERAGE.chr{chrom}.phyloP_no_human.txt"
+PHYLOP_46WAY = "resources/phylop_46way/placentalMammals.phyloP46way.chr{chrom}.txt"
+
+chroms = [str(c) for c in range(1, 23)]
+
+# SNP set name -> the VCF its positions come from
+SET_VCF = {"shared": SHARED_VCF, "tgp_maf5": TGP_MAF5_VCF, "chimp": CHIMP_VCF}
+
+
+rule all:
+    input:
+        expand("phylop/{snpset}_snps_phylop_chr{chrom}.txt", snpset=SET_VCF, chrom=chroms),
+        expand("phylop_46way/{snpset}_snps_phylop_chr{chrom}.txt", snpset=SET_VCF, chrom=chroms)
+
+
+# Positions of each SNP set, autosomes only.
+rule get_chrom_pos:
+    input:
+        vcf = lambda w: SET_VCF[w.snpset]
+    output:
+        chrom_pos = "data/{snpset}_snps_chrom_pos.txt"
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS\n' {input.vcf} | grep '^[0-9]' > {output.chrom_pos}
+        """
+
+
+rule annotate_phylop:
+    input:
+        snp_file = "data/{snpset}_snps_chrom_pos.txt",
+        phylop_file = PHYLOP_NO_HUMAN
+    output:
+        "phylop/{snpset}_snps_phylop_chr{chrom}.txt"
+    script:
+        "scripts/annotate_phylop_scores.py"
+
+
+rule annotate_phylop_46way:
+    input:
+        snp_file = "data/{snpset}_snps_chrom_pos.txt",
+        phylop_file = PHYLOP_46WAY
+    output:
+        "phylop_46way/{snpset}_snps_phylop_chr{chrom}.txt"
+    script:
+        "scripts/annotate_phylop_scores.py"

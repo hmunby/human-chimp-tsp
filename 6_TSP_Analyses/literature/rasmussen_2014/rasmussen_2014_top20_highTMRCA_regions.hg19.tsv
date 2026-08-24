@@ -1,0 +1,24 @@
+# Rasmussen, Hubisz, Gronau & Siepel 2014 (ARGweaver), PLoS Genet 10:e1004342, Table 2.
+# Top-20 10 kb windows by posterior expected TMRCA. Coordinates hg19; TMRCA in GENERATIONS.
+# Transcribed from the published table image.
+rank	chrom	start_hg19	end_hg19	TMRCA_generations	poly_per_kb	Npoly	CNV	comment
+1	chr4	190590001	190600000	615775	16.6	32.8	yes	Part of large intergenic region near telomere of long arm of chr 4
+2	chr5	21560001	21570000	503311	16.2	5.1	yes	Intron of GUSBP1
+3	chr3	97930001	97940000	479803	16.4	5.3	no	Intergenic region in cluster of olfactory receptor genes
+4	chr6	57270001	57280000	479504	13.7	28.0	yes	Intron of PRIM2
+5	chr2	223940001	223950000	449728	19.8	4.3	no	Intergenic region downstream of KCNE4
+6	chr5	21550001	21560000	412679	14.2	4.4	yes	Intron of GUSBP1
+7	chr6	57220001	57230000	399887	16.2	12.8	yes	Intron of PRIM2
+8	chr6	29680001	29690000	380228	15.3	10.0	no	Intergenic region upstream of HLA-F
+9	chr1	94220001	94230000	377017	8.0	4.2	no	Intron of BCAR3
+10	chr8	123070001	123080000	375128	15.3	4.2	no	Intron of BC052578
+11	chr11	55670001	55680000	374537	12.0	4.3	no	Intergenic region between TRIM51 and OR5W2
+12	chr6	29950001	29960000	371110	17.6	7.6	no	Intergenic region between HLA-A and HLA-J
+13	chr17	64010001	64020000	367842	8.6	5.5	no	Intron of CEP112
+14	chr6	29670001	29680000	365313	15.8	10.1	no	Intergenic region upstream of HLA-F
+15	chr11	55690001	55700000	361088	11.5	4.1	no	Intergenic region between OR5W2 and OR5I1
+16	chr6	158680001	158690000	345382	10.4	4.8	no	Intergenic region upstream of TULP4
+17	chr6	29720001	29730000	341797	12.4	8.0	no	Intergenic region between HLA-F and HLA-G
+18	chr17	43790001	43800000	335647	11.2	5.0	no	Intron of CRHR1
+19	chr6	8470001	8480000	325656	10.1	4.5	no	Intron of noncoding RNA LOC100506207
+20	chr4	141920001	141930000	325570	12.1	3.2	no	Intron of RNF150

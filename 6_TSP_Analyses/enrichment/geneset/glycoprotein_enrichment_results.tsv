@@ -1,0 +1,5 @@
+test	null_source	n_foreground	obs_glyco	obs_frac	null_frac	fold	p_value	n_null
+unmatched_hypergeometric	all autosomal PC genes	55	24	0.436	0.224	1.94	0.0004	19156
+unmatched_empirical	100000 random 55-gene draws	55	24	0.436	0.224	1.94	0.0003	100000
+matched_empirical_COUNT	BMAP+structure+rule matched null loci (count statistic)	55	24	0.436	0.33	1.32	0.0625	2000
+matched_empirical_FRACTION	BMAP+structure+rule matched null loci (fraction statistic)	55	24	0.436	0.333	1.31	0.063	2000

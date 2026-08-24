@@ -1,0 +1,135 @@
+# Intersect the human and chimpanzee SNP sets to obtain the shared-variation call set, then remove
+# human paralogous regions and annotate. Species A = the species whose reference both VCFs are on
+# (human, hg19/b37); species B = the other species lifted onto A's reference (chimpanzee).
+
+# ---- inputs (edit) ------------------------------------------------------------------------------
+# Species A: human 1000GP annotated biallelic sites VCF (b37) -- output of 2_1000GenomesProjectProcessing.
+SPECIES_A_VCF = "../../2_1000GenomesProjectProcessing/3_Annotation/output/1000GP.wgs.biallelic.sites.YRI.CpG.snpeff.MR.MAF05.vcf.gz"
+# Species B: chimpanzee calls lifted to the human reference (b37) -- output of stage 1 filtering.
+SPECIES_B_VCF = "../../1_ChimpanzeeCallingFiltering/3_Filtering/8_human_ref/genotyped.chimp43.hg19.b37.vcf.gz"
+
+# Species B AF/ID INFO header added to the intersected VCF (edit for your species B).
+SPECIES_B_AF_ID_HEADER = "misc_files/AF_ID_header.hdr"
+AF_anno = "CHIMP_AF"
+ID_anno = "CHIMP_ID"
+
+# Human paralog regions to exclude (bundled; see misc_files/README.md).
+PARALOGS_SD = "misc_files/paralogs_SD.bed"
+PARALOGS_CNV_DUP = "misc_files/paralogs_CNV_DUP.bed"
+
+# -------------------------------------------------------------------------------------------------
+
+# RULES
+rule all:
+    input:
+        vcf = "paralog_filtered/shared_variants.SD_CNV_DUP_filtered.vcf.gz",
+        table = "paralog_filtered/shared_variants.SD_CNV_DUP_filtered.table.txt"
+
+# Intersect: sites present in BOTH VCFs; keep each species' records (0000 = A, 0001 = B).
+rule intersect:
+    input:
+        VCF_A = SPECIES_A_VCF,
+        VCF_B = SPECIES_B_VCF
+    output:
+        vcf_isec_A = "isec_out/isec.geno_A.vcf.gz",
+        vcf_isec_B = "isec_out/isec.geno_B.vcf.gz"
+    shell:
+        r"""
+        bcftools isec -p isec_out -n=2 -w 1,2 {input.VCF_A} {input.VCF_B}
+        bgzip -c isec_out/0000.vcf > isec_out/isec.geno_A.vcf.gz
+        bgzip -c isec_out/0001.vcf > isec_out/isec.geno_B.vcf.gz
+        tabix isec_out/isec.geno_A.vcf.gz
+        tabix isec_out/isec.geno_B.vcf.gz
+        """
+
+rule raw_stats:
+    input:
+        VCF_A = "isec_out/isec.geno_A.vcf.gz",
+        VCF_B = "isec_out/isec.geno_B.vcf.gz"
+    output:
+        stats_A = "isec_out/isec.stats.A.txt",
+        stats_B = "isec_out/isec.stats.B.txt"
+    shell:
+        r"""
+        bcftools stats {input.VCF_A} > {output.stats_A}
+        bcftools stats {input.VCF_B} > {output.stats_B}
+        """
+
+# Recompute species B (chimp) allele frequency and extract a CHROM/POS/AF/ID annotation table.
+rule update_extract_AF:
+    input:
+        VCF_B = "isec_out/isec.geno_B.vcf.gz",
+    output:
+        VCF_B = "isec_out/isec.geno_B.updated.vcf.gz",
+        AF_B_anno = "isec_out/species_B_AF.anno.txt.gz"
+    shell:
+        r"""
+        bcftools +fill-tags -Oz -o {output.VCF_B} {input.VCF_B} -- -t all
+        tabix {output.VCF_B}
+        bcftools query -f '%CHROM\t%POS\t%POS\t%AF\t%ID\n' {output.VCF_B} | bgzip -c > {output.AF_B_anno}
+        tabix -s1 -b2 -e3 {output.AF_B_anno}
+        """
+
+# Annotate the human shared records with the chimp AF + panTro6 ID.
+rule annoate_AF_ID:
+    input:
+        VCF_A = "isec_out/isec.geno_A.vcf.gz",
+        AF_B_anno = "isec_out/species_B_AF.anno.txt.gz"
+    output:
+        VCF = "shared_variants/shared_variants.vcf.gz",
+        VCF_index = "shared_variants/shared_variants.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools annotate -a {input.AF_B_anno} -h {SPECIES_B_AF_ID_HEADER} -Oz -o {output.VCF} -c CHROM,FROM,TO,{AF_anno},{ID_anno} {input.VCF_A}
+        tabix {output.VCF}
+        """
+
+rule variant_table:
+    input:
+        VCF = "shared_variants/shared_variants.vcf.gz"
+    output:
+        table = "shared_variants/shared_variants.txt"
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%AF\t%{ID_anno}\t%{AF_anno}\n' {input.VCF} > {output.table}
+        """
+
+# Remove shared sites falling in human segmental duplications.
+rule filter_paralogs_SD:
+    input:
+        VCF = "shared_variants/shared_variants.vcf.gz",
+        paralogs = PARALOGS_SD
+    output:
+        VCF = "paralog_filtered/shared_variants.SD_filtered.vcf.gz",
+        stats = "paralog_filtered/shared_variants.SD_filtered.stats.txt"
+    shell:
+        r"""
+        bcftools view -T ^{input.paralogs} -Oz -o {output.VCF} {input.VCF}
+        tabix {output.VCF}
+        bcftools stats {output.VCF} > {output.stats}
+        """
+
+# Remove shared sites falling in human CNV / duplication regions.
+rule filter_paralogs_CNV_DUP:
+    input:
+        VCF = "paralog_filtered/shared_variants.SD_filtered.vcf.gz",
+        paralogs = PARALOGS_CNV_DUP
+    output:
+        VCF = "paralog_filtered/shared_variants.SD_CNV_DUP_filtered.vcf.gz",
+        stats = "paralog_filtered/shared_variants.SD_CNV_DUP_filtered.stats.txt"
+    shell:
+        r"""
+        bcftools view -T ^{input.paralogs} -Oz -o {output.VCF} {input.VCF}
+        tabix {output.VCF}
+        bcftools stats {output.VCF} > {output.stats}
+        """
+
+rule output_variant_table:
+    input:
+        VCF = "paralog_filtered/shared_variants.SD_CNV_DUP_filtered.vcf.gz"
+    output:
+        table = "paralog_filtered/shared_variants.SD_CNV_DUP_filtered.table.txt"
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%AF\t%CHIMP_ID\t%CHIMP_AF\t%AA\t%CPG\t%LOWER_AGE_YRI\t%UPPER_AGE_YRI\t%ANN\n' {input.VCF} > {output.table}
+        """

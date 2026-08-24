@@ -1,0 +1,60 @@
+Region (hg19)	Gene	Assignment	TSPs	Physical span (bp)	Genetic span (x10-3 cM)	Variant type	BMAP decile	Literature	GWAS (L2G effector)
+chr21:41,205,924-41,208,874	HMGN1	molqtl	12	2950	0.720	intergenic	9	Bitarello et al. 2018	—
+chr5:8,017,470-8,024,003	MTRR	molqtl	11	6533	3.251	intergenic	9	Leffler et al. 2013; Bitarello et al. 2018	—
+chr4:144,655,489-144,662,054	GYPB	l2g	8	6565	2.243	intron	4	Bitarello et al. 2018; Leffler et al. 2013; Rocha et al. 2026	Lactate levels; Total bilirubin levels (+20 more)
+chr4:115,378,668-115,379,737	UGT8	l2g	7	1069	0.021	intergenic	7	Bitarello et al. 2018	Calcium levels; Urolithiasis
+chr4:57,918,296-57,919,705	IGFBP7	l2g	6	196 / 484	0.565 / 1.245*	intron	9	Leffler et al. 2013; Bitarello et al. 2018; DeGiorgio et al. 2014; Rocha et al. 2026	Height
+chr4:71,210,148-71,210,970	MUC7	molqtl	5	822	0.222	intergenic	7	Bitarello et al. 2018	—
+chr2:1,138,967-1,139,647	SH3YL1	molqtl	4	680	1.434	intron	8	Bitarello et al. 2018; DeGiorgio et al. 2014; Rocha et al. 2026	—
+chr1:106,125,135-106,131,147	LINC01676	molqtl	3	6012	3.899	downstream_gene, intergenic	8	—	Body mass index; Weight (+1 more)
+chr11:24,791,431-24,792,057	LUZP2	nearest	3	626	0.009	intron	10	Bitarello et al. 2018; DeGiorgio et al. 2014	—
+chr2:237,968,214-237,968,421	COPS8	nearest	3	207	0.058	upstream_gene	10	—	—
+chr4:56,144,663-56,147,967	SRD5A3	molqtl	3	3304	0.667	intergenic	4	Leffler et al. 2013	—
+chr5:16,919,819-16,919,992	MYO10	l2g	2	173	0.133	upstream_gene	10	—	Heel bone mineral density
+chr10:25,593,349-25,593,541	GPR158	nearest	2	192	0.101	intron	8	Rocha et al. 2026	—
+chr10:67,278,595-67,279,509	CTNNA3	l2g	2	914	0.001	intergenic	7	Bitarello et al. 2018	Testosterone levels; Total testosterone levels (+8 more)
+chr5:29,637,400-29,637,695	CDH6	nearest	2	295	0.221	intergenic	9	—	—
+chr2:224,638,996-224,638,996	AP1S3	l2g	1	0	0.000	intron	9	—	Arm predicted mass left; Basal metabolic rate
+chr1:246,380,688-246,380,688	SMYD3	nearest	1	0	0.000	intron	5	—	—
+chr4:12,087,957-12,087,957	HS3ST1	nearest	1	0	0.000	intergenic	8	—	—
+chr2:224,887,004-224,887,004	SERPINE2	nearest	1	0	0.000	intron	8	—	—
+chr4:57,698,600-57,698,600	SPINK2	nearest	1	0	0.000	intergenic	8	—	—
+chr2:129,359,232-129,359,232	HS6ST1	nearest	1	0	0.000	intergenic	10	—	—
+chr2:42,237,228-42,237,228	PKDCC	l2g	1	0	0.000	intergenic	3	—	Ankle spacing width; Femoral neck bone mineral density (+9 more)
+chr2:35,952,400-35,952,400	CRIM1	nearest	1	0	0.000	upstream_gene	7	—	—
+chr1:247,627,001-247,627,001	AHCTF1	molqtl	1	0	0.000	intergenic	7	Bitarello et al. 2018	Mean platelet (thrombocyte) volume
+chr1:116,732,423-116,732,423	MAB21L3	nearest	1	0	0.000	intergenic	8	Bitarello et al. 2018	—
+chr1:5,348,639-5,348,639	AJAP1	nearest	1	0	0.000	intergenic	10	—	—
+chr1:4,917,460-4,917,460	AJAP1	nearest	1	0	0.000	intergenic	10	—	—
+chr4:162,038,353-162,038,353	FSTL5	nearest	1	0	0.000	intergenic	7	—	—
+chr4:141,921,518-141,921,518	RNF150	molqtl	1	0	0.000	upstream_gene	8	Rasmussen et al. 2014; DeGiorgio et al. 2014	—
+chr4:58,570,867-58,570,867	IGFBP7	nearest	1	0	0.000	intergenic	3	Bitarello et al. 2018	—
+chr4:71,386,175-71,386,175	MUC7	l2g	1	0	0.000	intron	6	—	Uterine fibroids
+chr4:58,495,926-58,495,926	IGFBP7	nearest	1	0	0.000	intron	3	—	—
+chr3:145,043,291-145,043,291	PLOD2	nearest	1	0	0.000	intergenic	8	—	—
+chr4:32,646,855-32,646,855	PCDH7	nearest	1	0	0.000	intergenic	7	—	—
+chr4:180,069,715-180,069,715	AGA	nearest	1	0	0.000	intergenic	9	Bitarello et al. 2018	—
+chr7:36,547,245-36,547,245	AOAH	nearest	1	0	0.000	intergenic	10	—	—
+chr8:21,455,324-21,455,324	GFRA2	l2g	1	0	0.000	intergenic	8	—	Body mass index
+chr8:74,978,724-74,978,724	LY96	nearest	1	0	0.000	intron	7	—	—
+chr8:54,528,520-54,528,520	ATP6V1H	nearest	1	0	0.000	intergenic	6	—	HDL cholesterol levels x long total sleep time interaction
+chr9:7,215,204-7,215,204	KDM4C	molqtl	1	0	0.000	intergenic	7	—	—
+chr4:172,136,342-172,136,342	GALNTL6	nearest	1	0	0.000	intergenic	8	—	—
+chr6:166,673,913-166,673,913	MPC1	molqtl	1	0	0.000	intergenic	10	—	—
+chr4:165,753,488-165,753,488	MARCHF1	molqtl	1	0	0.000	intergenic	10	—	—
+chr10:62,623,360-62,623,360	RHOBTB1	molqtl	1	0	0.000	intergenic	7	—	—
+chr10:59,743,375-59,743,375	IPMK	nearest	1	0	0.000	downstream_gene	7	Bitarello et al. 2018	—
+chr10:26,184,344-26,184,344	MYO3A	nearest	1	0	0.000	intergenic	4	Bitarello et al. 2018	—
+chr10:132,883,127-132,883,127	TCERG1L	nearest	1	0	0.000	intergenic	10	—	—
+chr11:133,338,872-133,338,872	OPCML	l2g	1	0	0.000	intron	6	—	Substance use disorder
+chr13:37,973,335-37,973,335	POSTN	nearest	1	0	0.000	intergenic	9	Bitarello et al. 2018	—
+chr13:59,433,547-59,433,547	DIAPH3	nearest	1	0	0.000	intergenic	3	—	Body mass index; Body fat percentage (+9 more)
+chr11:5,373,738-5,373,738	OR51E2	molqtl	1	0	0.000	upstream_gene	8	—	—
+chr13:74,300,726-74,300,726	KLF12	l2g	1	0	0.000	intron	6	—	Adolescent idiopathic scoliosis; Standing height
+chr14:22,758,552-22,758,552	OXA1L	molqtl	1	0	0.000	intergenic	10	—	—
+chr15:54,984,861-54,984,861	UNC13C	nearest	1	0	0.000	intergenic	8	—	—
+chr14:89,538,401-89,538,401	FOXN3	nearest	1	0	0.000	intergenic	8	—	—
+chr16:5,605,114-5,605,114	RBFOX1	l2g	1	0	0.000	intron	10	DeGiorgio et al. 2014	Weight, inverse-rank normalized
+chr17:58,829,124-58,829,124	BCAS3	l2g	1	0	0.000	upstream_gene	1	—	Creatinine levels; Glutamine levels (+7 more)
+chr17:70,908,606-70,908,606	SLC39A11	nearest	1	0	0.000	intron	10	—	—
+chr20:52,817,810-52,817,810	PFDN4	l2g	1	0	0.000	intergenic	10	—	Colorectal cancer (oestrogen-progestogen hormone therapy interaction)

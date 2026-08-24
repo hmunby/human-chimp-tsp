@@ -1,0 +1,468 @@
+# Modules
+import sys
+import pandas as pd
+
+### DESCRIPTION ###
+
+# Pipeline to remap regions around candidate SNPs in chimp data to hg19 , call variants and phase them
+
+### REGION LIST PROCESSING ###
+
+# Region file
+reg_list_file = "misc_files/combined_region_250kb_ids.txt"
+
+# Read in region list file, no header, tab delim
+region_df = pd.read_csv(reg_list_file, sep="\t", header=None)
+region_df.columns = ["REGION_250kb_ID"]
+
+# ---- external inputs (edit) --------------------------------------------------------------------
+REF = "resources/hg19/ucsc.hg19.fasta"     # human hg19 reference (chimp reads are remapped to it)
+BAM_DIR = "resources/chimp_bam"            # source chimp BAMs (mapped to PanTro6); `remap` writes hg19 ones to bam/
+TGP_VCF_DIR = "resources/1000GP"           # 1000GP phase3 per-chrom genotype VCFs (v5b)
+# shared-SNP sites (CHROM POS) from the stage-3 intersect; protected during phasing thinning
+SHARED_SITES = "../../3_SharedVariation/1_Intersect/paralog_filtered/shared_variants.SD_CNV_DUP_filtered.sites.txt"
+
+# BAM/CRAM dir
+bam_dir = BAM_DIR
+
+# Sample bam/cram file
+bam_names_file = "misc_files/bam_cram_chimp_samples.txt"
+
+# Read in tab delim file of samples and file names, store as a dictionary
+samples = pd.read_csv(bam_names_file, sep = "\t", header=None)
+samples.columns = ["sample","filename"]
+sample_dict = samples.set_index("sample").to_dict()
+
+# Save samples as list
+sample_list = samples["sample"].tolist()
+
+# Chromosomes (1 to 22)
+chroms = [str(i) for i in range(1,23)]
+
+# Read non_overlapping_regions file into list
+non_overlap_region_file = "misc_files/non_overlapping_region_250kb_ids.txt" # File with one region ID per line
+with open(non_overlap_region_file, "r") as f:
+    non_overlap_region_list = [line.strip() for line in f]
+
+localrules: all
+
+### RULES ###
+
+rule all:
+    input:
+        # Final inputs for SINGER: the per-region split VCFs for each chrom.
+        # All upstream GATK/phasing files are marked temp() and are deleted once these
+        # are produced (BAMs are inputs, not outputs, so they are kept).
+        expand("merged_regions/{chrom}", chrom = chroms)
+        
+
+rule remap:
+    input:
+        # Get input name from dictionary
+        bam = lambda wildcards: f"{bam_dir}/{sample_dict['filename'][wildcards.sample]}",
+        ref = REF,
+        idx = REF + ".bwt"
+    output:
+        bam = "bam/{sample}.bam"
+    resources:
+        # Deeply sequenced SAMD samples get more cores
+        cpus = lambda wildcards: 12 if "SAMD" in wildcards.sample else 8,
+        mem = 6000,
+        time = 4320
+    shell: 
+        r"""
+        samtools collate -T tmp/{wildcards.sample} -Oun128 {input.bam} | samtools fastq -OT RG,BC - | bwa mem -pt8 -CH <(samtools view -H {input.bam} | grep ^@RG) {input.ref} - | samtools sort -@4 -m4g -o {output.bam} -
+        """
+
+rule index:
+    input:
+        bam = "bam/{sample}.bam"
+    output:
+        idx = "bam/{sample}.bam.bai"
+    shell:
+        r"""
+        samtools index {input.bam}
+        """
+
+rule haplotype_caller_region:
+    input:
+        bam = "bam/{sample}.bam",
+        idx = "bam/{sample}.bam.bai",
+        ref = REF,
+        interval_list = "misc_files/regions_chr{chrom}.list"
+    output:
+        temp("gvcf/{chrom}/{sample}.g.vcf.gz")
+    resources:
+        cpus = 2
+    shell:
+        r"""
+        # Run GATK HaplotypeCaller for the region with an interval padding of 250kb on either side 
+        gatk --java-options "-Xms10G -Xmx10G -DGATK_STACKTRACE_ON_USER_EXCEPTION=true -Djava.io.tmpdir=tmp_gatk" HaplotypeCaller \
+            -R {input.ref} \
+            -ERC GVCF \
+            -I {input.bam} \
+            -L {input.interval_list} \
+            -ip 250000 \
+            -O {output}
+        """
+
+rule generate_sample_map:
+    input:
+        expand("gvcf/{{chrom}}/{sample}.g.vcf.gz", sample = sample_list)
+    output:
+        temp("sample_maps/{chrom}/{chrom}.sample_map")
+    run:
+        with open(output[0], "w") as f:
+            for path in input:
+                sample = path.split("/")[-1].split(".")[0]
+                f.write(f"{sample}\t{path}\n")
+
+rule genomicsdb_import:
+    input:
+        vcfs = expand("gvcf/{{chrom}}/{sample}.g.vcf.gz", sample = sample_list),
+        interval_list = "misc_files/regions_chr{chrom}.list",
+        sample_map = "sample_maps/{chrom}/{chrom}.sample_map"
+    output:
+        db = temp(directory("genomicsdb/{chrom}"))
+    shell:
+        r"""
+        mkdir -p tmp_gatk/gdb
+        gatk --java-options "-Xms4G -Xmx4G -DGATK_STACKTRACE_ON_USER_EXCEPTION=true" GenomicsDBImport \
+            --genomicsdb-workspace-path {output.db} \
+            --sample-name-map {input.sample_map} \
+            -L {input.interval_list} \
+            -ip 250000 \
+            -genomicsdb-shared-posixfs-optimizations "true" \
+            --tmp-dir tmp_gatk/gdb
+        """
+
+rule genotype_gvcfs:
+    input:
+        db = "genomicsdb/{chrom}",
+        ref = REF,
+        interval_list = "misc_files/regions_chr{chrom}.list",
+        pedigree = "misc_files/chimp59_pedigree.fam"
+    output:
+        temp("genotype_calls/{chrom}/genotyped.{chrom}.vcf.gz")
+    shell:
+        r"""
+        gatk --java-options "-Xms4G -Xmx4G -DGATK_STACKTRACE_ON_USER_EXCEPTION=true" GenotypeGVCFs \
+            -R {input.ref} \
+            -V gendb://genomicsdb/{wildcards.chrom} \
+            -L {input.interval_list} \
+            -ip 250000 \
+            --pedigree {input.pedigree} \
+            -O {output}
+        """
+
+rule biallelic_filter:
+    input:
+        "genotype_calls/{chrom}/genotyped.{chrom}.vcf.gz"
+    output:
+        bial = temp("biallelic/{chrom}/biallelic.{chrom}.vcf.gz"),
+        tbi = "biallelic/{chrom}/biallelic.{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        # Restrict to biallelic SNPs and set missing GT to ./. 
+        bcftools view -m2 -M2 -v snps {input} | bcftools +setGT -Oz -o {output.bial} -- -t q -n . -i 'FORMAT/DP=0 | SMPL_MAX(FORMAT/PL)=0'
+        tabix {output.bial}
+        """
+
+rule filter:
+    input:
+        rules.biallelic_filter.output.bial
+    output:
+        vcf = temp("filtered/{chrom}/filtered.{chrom}.vcf.gz"),
+        unzipped = temp("filtered/{chrom}/filtered.{chrom}.vcf"),
+        tbi = "filtered/{chrom}/filtered.{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        vcf=$(echo {output.vcf} | sed 's/.vcf.gz//')
+        vcfCleaner gatk \
+            -vcf {input} \
+            -out $vcf \
+            -biallelic \
+            -rmvIndels \
+            -maxcov 2850 \
+            -mincov 950 \
+            -mingeno 50 \
+            -rms_mapq 40 \
+            -mapqRankSum 6 \
+            -posbias 6 \
+            -strandbias 60 \
+            -baseqbias 6 \
+            -qual 30 \
+            -varq_depth 2 \
+            -hetexcess 28.69 \
+            -varonly \
+            -maf 0 \
+            -verbose 0
+        # bgzip the output VCF
+        bgzip -c ${{vcf}}.vcf > {output.vcf}
+        # Index the filtered VCF
+        tabix {output.vcf}
+        """
+rule setIDs:
+    input:
+        vcf = rules.filter.output.vcf
+    output:
+        vcf = temp("filtered/{chrom}/filtered.{chrom}.IDs.vcf.gz"),
+        tbi = "filtered/{chrom}/filtered.{chrom}.IDs.vcf.gz.tbi",
+        uvcf = temp("filtered/{chrom}/filtered.{chrom}.IDs.vcf"),
+        table = temp("filtered/{chrom}/filtered.{chrom}.table")
+    shell:
+        r"""
+        bcftools annotate --set-id +'%CHROM\_%POS\_%REF\_%ALT' {input.vcf} -Oz -o {output.vcf}
+        tabix {output.vcf}
+        gunzip -c {output.vcf} > {output.uvcf}
+        # Make table of CHROM POS REF ALT 
+        bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\n' {output.vcf} > {output.table}
+        """
+
+# Marker-QC for SHAPEIT (no genetic map; chimp data on human coords, kept uniform
+# across chroms). Drops a marker only if EITHER:
+#   (a) it lies > 10 kb past the last shared SNP on the chromosome (the subtelomeric
+#       tail of the terminal region; chr1), keeping a 10 kb buffer; OR
+#   (b) it is within 2 bp of the previous kept marker (near-duplicate positions;
+#       chr20's terminal cluster has shared SNPs interleaved, so the tail rule alone
+#       doesn't help there).
+# Shared SNPs (analysis targets; old-shared candidates are a subset) are NEVER
+# dropped. Fixes the deterministic "rho = nan / BAD RECOMBINATION RATE" abort.
+rule compute_thin_exclude:
+    input:
+        vcf = rules.setIDs.output.vcf,
+        shared = SHARED_SITES
+    output:
+        excl = "thinning/chr{chrom}.thin_exclude.txt"
+    params:
+        tail_buffer = 10000
+    shell:
+        r"""
+        mkdir -p thinning
+        # Protected positions = shared-SNP sites on this chrom (analysis targets)
+        awk -v c={wildcards.chrom} '($1==c || $1=="chr"c){{print $2}}' {input.shared} | sort -n > thinning/chr{wildcards.chrom}.protect.txt
+        # Markers (pos, id) in coordinate order
+        bcftools query -f '%POS\t%ID\n' {input.vcf} > thinning/chr{wildcards.chrom}.posid.txt
+        # Tail-trim anchor = last shared SNP PRESENT IN THE DATA (markers), not the last
+        # shared SNP in the reference site list: terminal shared SNPs can be dropped by
+        # missingness filtering, leaving the cutoff past all markers -> nothing trimmed and
+        # a dense subtelomeric non-shared tail that breaks SHAPEIT with rho=nan (chr5 q-end).
+        last_shared=$(awk 'NR==FNR{{prot[$1];next}} ($1 in prot){{if($1+0>m+0)m=$1}} END{{print m+0}}' thinning/chr{wildcards.chrom}.protect.txt thinning/chr{wildcards.chrom}.posid.txt)
+        cutoff=$((last_shared + {params.tail_buffer}))
+        # Combined rule: (a) buffered tail-trim past last_shared+buffer, OR (b) thin non-shared markers to >=20bp min-gap (keep all shared). The 20bp min-gap fixes chr5 (pervasive dense markers -> SHAPEIT rho=nan); verified by phasing test.
+        awk -v L=$cutoff 'NR==FNR{{prot[$1]=1; next}} {{
+             pos=$1; id=$2;
+             if(pos>L){{ if(!(pos in prot)) print id; next }}                       # (a) buffered tail
+             if(first==""){{keep=pos; first=1; next}}
+             if((pos in prot)||(pos-keep>=20)){{keep=pos}} else {{print id}}         # (b) >=20bp min-gap (keeps all shared)
+        }}' thinning/chr{wildcards.chrom}.protect.txt thinning/chr{wildcards.chrom}.posid.txt > {output.excl}
+        """
+
+rule vcf2plink:
+    input:
+        vcf = rules.setIDs.output.vcf,
+        uvcf = rules.setIDs.output.uvcf,
+        thin = rules.compute_thin_exclude.output.excl,
+        fam = "misc_files/chimp59_pedigree.fam"
+    output:
+        bed = temp("plink_files/filtered.mingeno.{chrom}.bed"),
+        bim = temp("plink_files/filtered.mingeno.{chrom}.bim")
+    shell:
+        r"""
+        # PLINK's intermediate bed/bim/fam go to scratch; only the missingness-filtered set
+        # is kept. $SCRATCH falls back to $TMPDIR, then /tmp.
+        S="${{SCRATCH:-${{TMPDIR:-/tmp}}}}"
+        plink --vcf {input.vcf} --keep-allele-order --a2-allele {input.uvcf} 4 3 '#' --exclude {input.thin} --make-bed --out "$S"/filtered.{wildcards.chrom}
+        # PLINK writes its own .fam from the VCF; replace it with the pedigree-ordered one
+        cp -f {input.fam} "$S"/filtered.{wildcards.chrom}.fam
+        plink --bfile "$S"/filtered.{wildcards.chrom} --keep-allele-order --a2-allele {input.uvcf} 4 3 '#' --geno 0.10 --mind 0.10 --make-bed --out plink_files/filtered.mingeno.{wildcards.chrom}
+        rm -f "$S"/filtered.{wildcards.chrom}.*
+        """
+
+rule bed2ped:
+    input:
+        bed = rules.vcf2plink.output.bed,
+        bim = rules.vcf2plink.output.bim,
+        uvcf = rules.filter.output.unzipped
+    output:
+        ped = temp("plink_files/filtered.mingeno.{chrom}.ped"),
+        map = temp("plink_files/filtered.mingeno.{chrom}.map")
+    shell:
+        r"""
+        plink --bfile plink_files/filtered.mingeno.{wildcards.chrom} --keep-allele-order --a2-allele {input.uvcf} 4 3 '#' --recode --out plink_files/filtered.mingeno.{wildcards.chrom}
+        """
+
+rule run_shapeit:
+    input:
+        ped = rules.bed2ped.output.ped,
+        map = rules.bed2ped.output.map
+    output:
+        phased = temp("phased/filtered.chr{chrom}.phased.haps")
+    shell:
+        r"""
+        mkdir -p logs/shapeitlogs
+        shapeit --input-ped {input.ped} {input.map} \
+        --rho 0.0008 \
+        --duohmm \
+        --force \
+        --effective-size 20000 \
+        -O phased/filtered.chr{wildcards.chrom}.phased \
+        -W 3 \
+        --output-log logs/shapeitlogs/filtered.chr{wildcards.chrom}.phased.log
+        """
+
+# Corrects coding of fixed sites in .haps output from SHAPEIT 
+rule correct_fixed:
+    input:
+        haps = rules.run_shapeit.output.phased,
+        ids = rules.setIDs.output.table
+    output:
+        haps = temp("phased/corrected/filtered.chr{chrom}.phased.haps")
+    script:
+        "scripts/correct_fixed_sites.py"
+
+rule convert_hap_vcf:
+    input:
+        "phased/corrected/filtered.chr{chrom}.phased.haps"
+    output:
+        vcf = temp("phased/corrected/filtered.chr{chrom}.phased.vcf.gz"),
+        tbi = "phased/corrected/filtered.chr{chrom}.phased.vcf.gz.tbi"
+    shell:
+        r"""
+        cp phased/filtered.chr{wildcards.chrom}.phased.sample phased/corrected/filtered.chr{wildcards.chrom}.phased.sample
+        shapeit -convert \
+        --input-haps phased/corrected/filtered.chr{wildcards.chrom}.phased \
+        --output-vcf phased/corrected/filtered.chr{wildcards.chrom}.phased.vcf \
+        --output-log logs/shapeitlogs/convert_hap_vcf.{wildcards.chrom}.log
+        # bgzip and tabix
+        bgzip phased/corrected/filtered.chr{wildcards.chrom}.phased.vcf
+        tabix {output.vcf}
+        """
+
+# Transfer annotations from unphased VCFs to phased VCFs (except for GT)
+rule transfer_ann:
+    input:
+        phased = rules.convert_hap_vcf.output.vcf,
+        unphased = rules.setIDs.output.vcf
+    output:
+        vcf = temp("phased_ann/filtered.chr{chrom}.phased.vcf.gz"),
+        tbi = "phased_ann/filtered.chr{chrom}.phased.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools annotate -a {input.unphased} -c INFO,^FORMAT/GT {input.phased} -Oz -o {output.vcf}
+        tabix {output.vcf}
+        """
+
+# Remove related chimpanzee samples
+rule remove_related_chimps:
+    input:
+        vcf = rules.transfer_ann.output.vcf,
+        unrelated = "misc_files/unrelated_chimps.txt"
+    output:
+        vcf = temp("phased_ann/filtered.chr{chrom}.phased.unrelated.vcf.gz"),
+        tbi = "phased_ann/filtered.chr{chrom}.phased.unrelated.vcf.gz.tbi"
+    shell:
+        r"""
+        # Subset to unrelated set, remove SNPs that now have AC=0 and fill tags 
+        bcftools view -S {input.unrelated} --force-samples {input.vcf} -Oz | bcftools +fill-tags -Oz -- -t all | bcftools view -e 'AC==0' -Oz -o {output.vcf}
+        tabix {output.vcf}
+        """
+
+# Get subset of same regions in human VCFs 
+rule subset_human:
+    input:
+        vcf = TGP_VCF_DIR + "/ALL.chr{chrom}.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz",
+        interval_list = "region_files/regions_chr{chrom}_250kb.txt"
+    output:
+        biallelic = temp("human/chr{chrom}.human.biallelic.vcf.gz"),
+        bi_tbi = "human/chr{chrom}.human.biallelic.vcf.gz.tbi",
+        all = temp("human/chr{chrom}.human.vcf.gz"),
+        all_tbi = "human/chr{chrom}.human.vcf.gz.tbi",
+        removed = temp("human/chr{chrom}.removed.txt")
+    shell:
+        r"""
+        # Subset to region of interest first 
+        bcftools view -R {input.interval_list} {input.vcf} -Oz -o {output.all}
+        tabix {output.all}
+        # Remove indels and multiallelic sites
+        bcftools view -m2 -M2 -v snps {output.all} -Oz -o {output.biallelic}
+        tabix {output.biallelic}
+        # Get list of sites from each and get list removed
+        bcftools query -f '%CHROM\t%POS\n' {output.all} > {output.all}.sites
+        bcftools query -f '%CHROM\t%POS\n' {output.biallelic} > {output.biallelic}.sites
+        grep -Fxvf {output.biallelic}.sites {output.all}.sites > {output.removed}
+        """
+
+# Merge VCFs
+rule merge_vcfs:
+    input:
+        phased = rules.remove_related_chimps.output.vcf,
+        human = rules.subset_human.output.biallelic
+    output:
+        multi = temp("merged/chr{chrom}.merged.multi.vcf.gz"),
+        no_multi = temp("merged/chr{chrom}.merged.nomulti.vcf.gz")
+    shell:
+        r"""
+        bcftools merge -m none -Oz -o {output.no_multi} {input.phased} {input.human}
+        tabix {output.no_multi}
+        bcftools merge -m snps -Oz -o {output.multi} {input.phased} {input.human}
+        tabix {output.multi}
+        """
+
+# Get list of chimp fail sites (to be removed from merged VCF)
+rule chimp_fail:
+    input:
+        phased = rules.remove_related_chimps.output.vcf,
+        raw = rules.genotype_gvcfs.output
+    output:
+        fail = temp("phased_ann/chr{chrom}.filtered_sites.txt")
+    shell:
+        r"""
+        # Get list of sites in raw VCF, remove "chr" from chrom name
+        bcftools query -f '%CHROM\t%POS\n' {input.raw} | sed 's/chr//g' > phased_ann/chr{wildcards.chrom}.raw_sites
+        # Get list of sites in phased VCF
+        bcftools query -f '%CHROM\t%POS\n' {input.phased} > phased_ann/chr{wildcards.chrom}.phased_sites
+        # Get sites that are in raw but not phased
+        grep -Fxvf phased_ann/chr{wildcards.chrom}.phased_sites phased_ann/chr{wildcards.chrom}.raw_sites > {output.fail}
+        """
+
+# Filter and fill in missing GTs
+# Remove sites that were removed from human VCF in subset_human AND remove chimp fail files 
+rule filter_fill_merged:
+    input:
+        vcf = rules.merge_vcfs.output.multi,
+        chimp_fail = rules.chimp_fail.output.fail,
+        human_removed = rules.subset_human.output.removed
+    output:
+        vcf = temp("merged/chr{chrom}.merged.multi.filtered.vcf.gz"),
+        tbi = "merged/chr{chrom}.merged.multi.filtered.vcf.gz.tbi"
+    shell:
+        r"""
+        # Remove sites that were removed from each species , fill missing GTs 0/0
+        bcftools view -m2 -M2  -T ^{input.human_removed} {input.vcf} -Oz | bcftools view -T ^{input.chimp_fail} -Oz | bcftools +setGT -Oz -o {output.vcf} -- -t . -n 0
+        tabix {output.vcf}
+        """
+
+# # Split into individual regions for chroms with multiple regions
+rule split_regions:
+    input:
+        vcf = rules.filter_fill_merged.output.vcf,
+        regions = "region_files/regions_chr{chrom}_250kb.nonoverlap.txt"
+    output:
+        directory("merged_regions/{chrom}")
+    shell:
+        r"""
+        mkdir merged_regions/{wildcards.chrom}
+        # Read in region file to loop over 
+        cat {input.regions} | while read region;
+        do
+            # Get chrom start and end (tab delim)
+            chrom=$(echo $region | cut -f1 -d" ")
+            start=$(echo $region | cut -f2 -d" ")
+            end=$(echo $region | cut -f3 -d" ")
+            # Region name
+            rname=$(echo $region | sed 's/ /_/g')
+            bcftools view -r $chrom:$start-$end {input.vcf} -Oz -o merged_regions/{wildcards.chrom}/$rname.vcf.gz
+            tabix merged_regions/{wildcards.chrom}/$rname.vcf.gz
+        done
+        """

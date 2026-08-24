@@ -1,0 +1,93 @@
+# Chimpanzee subspecies identification by PCA (Supplementary Figure 1).
+#
+# The publicly available samples carry subspecies labels from their source publications, but the
+# five founders of the newly sequenced pedigree do not. This assigns them by clustering: PCA on
+# LD-pruned genome-wide genotypes separates the 43 unrelated samples into three clusters
+# corresponding to the three subspecies, and each unlabelled founder is assigned to the cluster it
+# falls in.
+#
+#   VCF -> plink bed -> LD prune -> PCA -> assign subspecies -> figure
+
+#### INPUT PATHS (edit) ####
+# Combined, filtered chimpanzee VCF from ../3_Filtering/ (panTro6 coordinates, 43 unrelated samples)
+VCF = "resources/genotyped.chimp43.vcf.gz"
+
+# In-repo inputs (bundled)
+RENAME_CHROMS = "misc_files/rename_chroms.txt"            # contig -> chromosome names
+KNOWN_SUBSPECIES = "misc_files/sample_known_subspecies.txt"  # Sample <TAB> label, UNK where unknown
+
+# LD pruning: 50-SNP window, 10-SNP step, r^2 threshold 0.1
+PRUNE_PARAMS = "50 10 0.1"
+
+
+rule all:
+    input:
+        "pca/pca.pdf",
+        "pca/pca.eigenvec.subspecies_ids.txt"
+
+
+rule rename_chroms:
+    input:
+        vcf = VCF,
+        rename = RENAME_CHROMS
+    output:
+        vcf = "vcf/genotyped.chimp43.renamed.vcf.gz"
+    shell:
+        r"""
+        bcftools annotate --rename-chrs {input.rename} {input.vcf} -Oz -o {output.vcf}
+        tabix {output.vcf}
+        """
+
+
+rule plink_make_bed:
+    input:
+        vcf = rules.rename_chroms.output.vcf
+    output:
+        bed = "plink/chimp43.unpruned.bed"
+    shell:
+        "plink --vcf {input.vcf} --double-id --allow-extra-chr --make-bed"
+        " --out plink/chimp43.unpruned"
+
+
+rule plink_linkage_prune:
+    input:
+        bed = rules.plink_make_bed.output.bed
+    output:
+        prune_out = "pruning/chimp43.prune.out"
+    shell:
+        "plink --bfile plink/chimp43.unpruned --double-id --allow-extra-chr"
+        " --indep-pairwise " + PRUNE_PARAMS + " --out pruning/chimp43"
+
+
+rule plink_pca:
+    input:
+        bed = rules.plink_make_bed.output.bed,
+        prune_out = rules.plink_linkage_prune.output.prune_out
+    output:
+        eigenvec = "pca/pca.eigenvec",
+        eigenval = "pca/pca.eigenval"
+    shell:
+        "plink --bfile plink/chimp43.unpruned --double-id --allow-extra-chr"
+        " --extract {input.prune_out} --pca --out pca/pca"
+
+
+# Assign each sample to a subspecies from its position in PC1/PC2 space.
+rule get_subspecies_ids:
+    input:
+        eigenvec = rules.plink_pca.output.eigenvec
+    output:
+        ids = "pca/pca.eigenvec.subspecies_ids.txt",
+        sample_subspecies = "pca/sample_subspecies.txt"
+    shell:
+        "Rscript get_subspecies.R {input.eigenvec} {output.ids} {output.sample_subspecies}"
+
+
+rule plot_pca:
+    input:
+        eigenvec = rules.plink_pca.output.eigenvec,
+        eigenval = rules.plink_pca.output.eigenval,
+        known = KNOWN_SUBSPECIES
+    output:
+        plot = "pca/pca.pdf"
+    shell:
+        "Rscript plot_pca.R {input.eigenvec} {input.eigenval} {input.known} {output.plot}"

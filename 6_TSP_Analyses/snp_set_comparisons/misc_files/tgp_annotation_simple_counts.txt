@@ -1,0 +1,13 @@
+Annotation_Simple	count
+intergenic	2482843
+intron	2296354
+upstream_gene	883759
+downstream_gene	672963
+non_coding_transcript_exon	44103
+missense	20748
+3_prime_UTR	13932
+splice_region	7688
+synonymous	7664
+5_prime_UTR	4677
+LOF	708
+intragenic	530

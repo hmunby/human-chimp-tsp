@@ -1,0 +1,161 @@
+# Fit cobraa (PSMC+) to the chimpanzee multihetsep files, then decode the posterior.
+#
+# Two fits per individual, from the two mask stringencies produced by ../2_Multihetsep/:
+#   results/     mappability r = 0.50   -> the main analysis
+#   results_75/  mappability r = 0.75   -> sensitivity check
+#
+# The decode re-runs cobraa for a single iteration with the fitted theta, rho and lambda_A held
+# fixed, emitting the posterior distribution over the 64 coalescent-time intervals along each
+# chromosome. That posterior grid is the input to ../4_MinimalDecode/.
+
+#### INPUT PATHS (edit) ####
+# Multihetsep files from ../2_Multihetsep/, laid out as {subspecies}/{sample}/mhs/chr{c}.mhs
+MHS_DIR = "../2_Multihetsep"
+
+# cobraa (https://github.com/TrevorCousins/cobraa)
+COBRAA = "resources/cobraa/cobraa.py"
+
+# The nine individuals used in the paper, chosen on coverage, data quality and unrelatedness.
+# CEN = P. t. troglodytes, EAS = P. t. schweinfurthii, WES = P. t. verus.
+SAMPLE_POP = {
+    "SAMEA4374772": "CEN", "SAMEA4374778": "CEN", "SAMEA4374785": "CEN",
+    "2003": "EAS", "SAMEA4374790": "EAS", "SAMEA4374797": "EAS",
+    "1059": "WES", "SAMEA5204228": "WES", "SAMEA2421542": "WES",
+}
+
+# Autosomes only
+CHROMS = ["1", "2A", "2B", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
+          "15", "16", "17", "18", "19", "20", "21", "22"]
+
+# Published parameter set: D=64 time intervals, b=100 bp bins, mu/rho start 1.5, 30 EM
+# iterations, theta fixed to the chimpanzee estimate 0.001.
+D = 64
+B = 100
+SPREAD_1 = 0.075
+SPREAD_2 = 100
+MU_OVER_RHO = 1.5
+ITERATIONS = 30
+THRESH = 1
+THETA_FIXED = 0.001
+
+DECODE_DOWNSAMPLE = 10   # posterior emitted every 10 bins, i.e. every 1 kb at b=100
+
+
+### SETUP ###
+import numpy as np
+
+popsamples = [f"{pop}_{sample}" for sample, pop in SAMPLE_POP.items()]
+
+# Every output sits under this parameter path, so results from different settings never collide.
+PARAMS = (f"D_{D}/b_{B}/spread1_{SPREAD_1}/spread2_{SPREAD_2}/muoverr_{MU_OVER_RHO}/"
+          f"iterations{ITERATIONS}/thresh_{THRESH}/thetafixed_{THETA_FIXED}")
+
+
+def mhs_all_chroms(wildcards):
+    pop, sample = wildcards.popsam.split("_", 1)
+    return [f"{MHS_DIR}/{pop}/{sample}/mhs/chr{c}.mhs" for c in CHROMS]
+
+
+def mhs_all_chroms_stringent(wildcards):
+    pop, sample = wildcards.popsam.split("_", 1)
+    return [f"{MHS_DIR}/{pop}/{sample}/mhs/stringent75/chr{c}.mhs" for c in CHROMS]
+
+
+def mhs_one_chrom(wildcards):
+    pop, sample = wildcards.popsam.split("_", 1)
+    return f"{MHS_DIR}/{pop}/{sample}/mhs/chr{wildcards.chrom}.mhs"
+
+
+def fitted_params(popsam):
+    """Recover (theta, rho, lambda_A) from a finished fit, for the decode.
+
+    theta and rho are read from final_parameters.txt; lambda_A is taken from the last
+    "lambda_A updated" line of the log, and cross-checked against column 2 of the parameter
+    file (lambda_A = params[:, 2] * theta / 4) so a mismatched log/parameter pair is caught
+    rather than silently decoded with the wrong history.
+    """
+    params_file = f"results/{PARAMS}/popsample_{popsam}/final_parameters.txt"
+    with open(params_file) as f:
+        lines = f.readlines()
+    theta = float([i for i in lines if "theta" in i][0].split(" ")[-1])
+    rho = float([i for i in lines if "rho" in i][0].split(" ")[-1])
+
+    log_file = f"logs/{PARAMS}/popsample_{popsam}/log.txt"
+    with open(log_file) as f:
+        log_lines = f.readlines()
+    lambda_A = [i for i in log_lines if "lambda_A updated" in i][-1]
+    lambda_A = lambda_A.split(" ")[2].split("\n")[0].split("[")[1].split("]")[0]
+
+    expected = np.loadtxt(params_file)[:, 2] * theta / 4
+    got = np.array([float(i) for i in lambda_A.split(",")])
+    if np.max(np.abs(got - expected)) > 1e-15:
+        raise ValueError(f"{popsam}: lambda_A in the log does not match final_parameters.txt")
+    return theta, rho, lambda_A
+
+
+### RULES ###
+rule all:
+    input:
+        expand(f"results/{PARAMS}/popsample_{{popsam}}/final_parameters.txt", popsam=popsamples),
+        expand(f"results_75/{PARAMS}/popsample_{{popsam}}/final_parameters.txt", popsam=popsamples),
+        expand(f"results/{PARAMS}/popsample_{{popsam}}/chr{{chrom}}_decode.txt.gz",
+               popsam=popsamples, chrom=CHROMS)
+
+
+rule run_cobraa:
+    input:
+        mhs = mhs_all_chroms
+    output:
+        f"results/{PARAMS}/popsample_{{popsam}}/final_parameters.txt"
+    log:
+        f"logs/{PARAMS}/popsample_{{popsam}}/log.txt"
+    resources:
+        time = "05:00:00",
+        mem = "180G",
+        cores = 20
+    params:
+        prefix = lambda w: f"results/{PARAMS}/popsample_{w.popsam}/"
+    shell:
+        f"python3 {COBRAA} -in {{input.mhs}} -o {{params.prefix}} -D {D} -b {B}"
+        f" -mu_over_rho_ratio {MU_OVER_RHO} -its {ITERATIONS} -theta {THETA_FIXED}"
+        f" -thresh {THRESH} -spread_1 {SPREAD_1} -spread_2 {SPREAD_2} | tee {{log}}"
+
+
+rule run_cobraa_high_stringency:
+    input:
+        mhs = mhs_all_chroms_stringent
+    output:
+        f"results_75/{PARAMS}/popsample_{{popsam}}/final_parameters.txt"
+    log:
+        f"logs_75/{PARAMS}/popsample_{{popsam}}/log.txt"
+    resources:
+        time = "05:00:00",
+        mem = "180G",
+        cores = 20
+    params:
+        prefix = lambda w: f"results_75/{PARAMS}/popsample_{w.popsam}/"
+    shell:
+        f"python3 {COBRAA} -in {{input.mhs}} -o {{params.prefix}} -D {D} -b {B}"
+        f" -mu_over_rho_ratio {MU_OVER_RHO} -its {ITERATIONS} -theta {THETA_FIXED}"
+        f" -thresh {THRESH} -spread_1 {SPREAD_1} -spread_2 {SPREAD_2} | tee {{log}}"
+
+
+rule decode_cobraa:
+    input:
+        mhs = mhs_one_chrom,
+        fit = f"results/{PARAMS}/popsample_{{popsam}}/final_parameters.txt"
+    output:
+        f"results/{PARAMS}/popsample_{{popsam}}/chr{{chrom}}_decode.txt.gz"
+    log:
+        f"logs/{PARAMS}/popsample_{{popsam}}/chr{{chrom}}_decode_log.txt"
+    resources:
+        time = "00:05:00",
+        mem = "15G",
+        cores = 1
+    params:
+        fitted = lambda w: fitted_params(w.popsam)
+    shell:
+        f"python3 {COBRAA} -in {{input.mhs}} -o {{output}} -D {D} -b {B}"
+        f" -theta {{params.fitted[0]}} -rho {{params.fitted[1]}} -lambda_A_fg {{params.fitted[2]}}"
+        f" -its 1 -thresh {THRESH} -spread_1 {SPREAD_1} -spread_2 {SPREAD_2}"
+        f" -decode -decode_downsample {DECODE_DOWNSAMPLE} | tee {{log}}"

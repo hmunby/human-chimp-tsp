@@ -1,0 +1,129 @@
+# Filter 1000GP variants to those that map cleanly from human (hg19) to chimp (panTro6): the site
+# lifts over, and a +/- 100 bp window around it lifts over contiguously. Output is the passing sites
+# reported on the original hg19 genome. This mirrors the region-lift criterion applied when lifting
+# chimp variants to hg19 in stage 1.
+#
+chroms = list(range(1, 23))
+
+# ---- inputs (edit) ------------------------------------------------------------------------------
+# 1000GP phase3 per-chromosome genotype VCFs (v5b, b37): ALL.chr<chrom>.phase3_...genotypes.vcf.gz
+TGP_VCF_DIR = "resources/1000GP"
+SOURCE_REF  = "resources/hg19/ucsc.hg19.fasta"                       # human hg19 (chr-prefixed)
+TARGET_REF  = "resources/panTro6/panTro6.simple_chrom.fa"            # chimp panTro6 (GCA_002880755.3)
+CHAIN       = "resources/chains/hg19ToPanTro6.over.chain"            # UCSC liftOver chain
+CHROM_SIZES = "resources/hg19/human.hg19.genome"                     # UCSC hg19 chrom sizes (for slop)
+RENAME      = "misc_files/chr_b37_hg19.txt"                          # rename table (1 -> chr1 etc) 
+# ------------------------------------------------------------------------------------------------
+
+rule all:
+    input:
+        "output/autosomes_biallelic.vcf.gz",
+        "output/autosomes_biallelic.vcf.gz.tbi",
+        "output/autosomes_biallelic.sites.txt"
+
+# Tag each variant with its original position (to trace it through liftover) and rename 1 -> chr1
+# so names match the UCSC "chr" chain.
+rule prepare_VCF:
+    input:
+        vcf = TGP_VCF_DIR + "/ALL.chr{chrom}.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz",
+        rename_file = RENAME
+    output:
+        vcf = "input/chr{chrom}.hg19.vcf.gz",
+        index = "input/chr{chrom}.hg19.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools annotate --set-id "%CHROM\_%POS" {input.vcf} | bcftools annotate --rename-chrs {input.rename_file} -Oz -o {output.vcf}
+        tabix {output.vcf}
+        """
+
+# Site liftover hg19 -> panTro6; collect rejected variant IDs.
+rule lift_over:
+    input:
+        vcf = "input/chr{chrom}.hg19.vcf.gz",
+        chain = CHAIN,
+        ref = TARGET_REF,
+        source_ref = SOURCE_REF
+    output:
+        vcf = "lifted/chr{chrom}.vcf.gz",
+        reject_vcf = "lifted/chr{chrom}.rejected.vcf.gz",
+        vcf_idx = "lifted/chr{chrom}.vcf.gz.tbi",
+        reject_vcf_idx = "lifted/chr{chrom}.rejected.vcf.gz.tbi",
+        reject_IDs = "lifted/chr{chrom}.rejected.IDs.txt"
+    shell:
+        r"""
+        bcftools +liftover -Ou {input.vcf} -- \
+        -s {SOURCE_REF} \
+        -f {TARGET_REF} \
+        -c {CHAIN} \
+        -Oz --reject {output.reject_vcf} | bcftools sort --temp-dir tmp/ -Oz -o {output.vcf}
+        tabix {output.vcf}
+        tabix {output.reject_vcf}
+        bcftools query -f '%ID\n' {output.reject_vcf} > {output.reject_IDs}
+        """
+
+# Lift a +/- 100 bp window around each variant; regions that fail to lift contiguously are removed.
+rule region_lift:
+    input:
+        vcf = "input/chr{chrom}.hg19.vcf.gz"
+    output:
+        bed_slopped = "input/chr{chrom}.slopped_100bp.bed",
+        bed_lifted = "region_lift/chr{chrom}_lift_regions.bed",
+        bed_lifted_failed = "region_lift/chr{chrom}_failed_lift.bed",
+        rejected_IDs = "region_lift/chr{chrom}_failed_lift.IDs.txt"
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS0\t%END\t%ID\n' {input.vcf} | \
+        bedtools slop -g {CHROM_SIZES} -b 100 > {output.bed_slopped}
+        liftOver {output.bed_slopped} {CHAIN} {output.bed_lifted} {output.bed_lifted_failed}
+        grep -v '^#' {output.bed_lifted_failed} | cut -f4 > {output.rejected_IDs}
+        """
+
+# Remove variants failing either the site-lift or the region-lift, from the original hg19 VCF.
+rule remove_failed_regions:
+    input:
+        vcf = "input/chr{chrom}.hg19.vcf.gz",
+        rejected_liftover = "lifted/chr{chrom}.rejected.IDs.txt",
+        rejected_region = "region_lift/chr{chrom}_failed_lift.IDs.txt"
+    output:
+        vcf = "output/chr{chrom}.vcf.gz",
+        vcf_index = "output/chr{chrom}.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -e"ID=@{input.rejected_liftover} | ID=@{input.rejected_region}" -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+rule subset_biallelic:
+    input:
+        vcf = "output/chr{chrom}.vcf.gz"
+    output:
+        vcf = "output/chr{chrom}.biallelic.vcf.gz",
+        vcf_index = "output/chr{chrom}.biallelic.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools view -m2 -M2 -v snps -Oz -o {output.vcf} {input.vcf}
+        tabix {output.vcf}
+        """
+
+rule concat:
+    input:
+        expand("output/chr{chrom}.biallelic.vcf.gz", chrom=chroms)
+    output:
+        "output/autosomes_biallelic.vcf.gz",
+        "output/autosomes_biallelic.vcf.gz.tbi"
+    shell:
+        r"""
+        bcftools concat -Oz -o {output[0]} {input}
+        tabix {output[0]}
+        """
+
+# CHROM<TAB>POS list of passing biallelic SNPs, "chr" stripped (b37-style). 
+rule get_sites:
+    input:
+        vcf = "output/autosomes_biallelic.vcf.gz"
+    output:
+        "output/autosomes_biallelic.sites.txt"
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS\n' {input.vcf} | sed 's/^chr//g' > {output}
+        """

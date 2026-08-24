@@ -1,0 +1,3 @@
+##INFO=<ID=LOWER_AGE_YRI,Number=1,Type=Float,Description="Lower bound on age (gens) from Relate YRI populations">
+##INFO=<ID=UPPER_AGE_YRI,Number=1,Type=Float,Description="Upper bound on age (gens) from Relate YRI population">
+##INFO=<ID=AGE_ESTIMATE_YRI,Number=1,Type=Float,Description="Age estimate from Relate YRI population (midpoint of the age bounds)">

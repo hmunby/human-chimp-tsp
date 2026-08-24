@@ -1,0 +1,70 @@
+# External inputs and per-stage working directories. See RESOURCES.md for what belongs here.
+# These are read AND written by the stage-5 enrichment scripts, so they are never tracked.
+resources/
+
+# Large data (obtain from public archives / the data-availability statement)
+*.bam
+*.cram
+*.sam
+*.fastq
+*.fastq.gz
+*.fq.gz
+*.vcf
+*.vcf.gz
+*.vcf.gz.tbi
+*.g.vcf.gz
+*.fa
+*.fasta
+*.fa.gz
+*.fa.gz.fai
+*.fai
+*.bw
+*.bigWig
+*.chain
+*.gtf.gz
+
+# phyloP score tables: large, not bundled, staged as symlinks into the working tree
+6_TSP_Analyses/snp_set_comparisons/phylop
+6_TSP_Analyses/snp_set_comparisons/phylop_46way
+
+# Pipeline intermediates
+*.mhs
+*.trees
+*.ld
+*.psmcfa
+*.bed.gz
+*_decode.txt.gz
+minimal_decode/
+expected_uncoal/
+all_segments/
+singer/
+singer_arg/
+singer_trees/
+merged_regions*/
+work/
+plink/
+pruning/
+
+# Simulation output (the loess cache under midpoint_bias/ is deliberately kept, see below)
+*.pkl
+*.npz
+!**/midpoint_bias/scripts/midpoint_curve_cache.npz
+
+# API caches: regenerated on first run, never shipped
+ot_null_cache.json
+ot_variant_cache.json
+ot_study_cache.json
+
+# Run artifacts
+logs*/
+tmp/
+.snakemake/
+*.out
+*.err
+slurm-*.out
+
+# Python / OS
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/

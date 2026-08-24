@@ -1,0 +1,276 @@
+# SINGER on the combined human-chimpanzee sample, for every Ne / seed configuration.
+#
+# Runs all five reconstructions: 
+#
+#   ne50000_seed1 |
+#   ne50000_seed2 |  the REPORTED set -- three chains differing only in the MCMC seed,
+#   ne50000_seed3 |  pooled downstream by ../4_TSPRegions/2_ClusteringLD/aggregate_seeds.py
+#   ne20000_seed1 |  Ne sensitivity, single chain
+#   ne100000_seed1|  Ne sensitivity, single chain
+#
+# Everything upstream of SINGER is shared: the merged region VCFs and the downsampled
+# 50-human panel are built once and consumed byte-identically by all five runs, so the
+# configurations differ only in `-Ne` and `-seed`.
+#
+# Restrict to a subset with --config runs=ne20000_seed1,ne50000_seed1
+#
+# Inputs. Copy the per-region merged VCFs from the chimp recall stage first:
+#     mkdir merged_regions && cp ../2_ChimpRecall/merged_regions/*/*.vcf.* merged_regions/
+#
+# A note on scale. Five runs x ~433 regions x ~500 small files is ~1M files on shared
+# storage; SINGER writes four text files per posterior sample and the converter one
+# .trees each. That is fine on a filesystem sized for it and was not on ours. If yours
+# objects, either run the configurations one at a time, or enable `archive_arg` below to
+# tar each region's raw ARG once its metrics exist.
+
+import glob
+import json
+import os
+
+### CONFIGURATION #################################################################################
+
+# run name -> SINGER parameters. The name is a directory, so keep it filesystem-safe.
+RUNS = {
+    "ne20000_seed1":  dict(ne=20000,  seed=1),
+    "ne50000_seed1":  dict(ne=50000,  seed=1),
+    "ne50000_seed2":  dict(ne=50000,  seed=2),
+    "ne50000_seed3":  dict(ne=50000,  seed=3),
+    "ne100000_seed1": dict(ne=100000, seed=1),
+}
+if config.get("runs"):
+    keep = {r.strip() for r in str(config["runs"]).split(",")}
+    unknown = keep - set(RUNS)
+    if unknown:
+        raise ValueError(f"unknown run(s): {sorted(unknown)}; known: {sorted(RUNS)}")
+    RUNS = {k: v for k, v in RUNS.items() if k in keep}
+
+MU = "1.25e-8"          # mutation rate per bp per generation, all runs
+N_SAMPLES = 167         # SINGER -n: total posterior samples written
+THIN = 60               # SINGER -thin
+FIRST, LAST = 67, 167   # retained samples; 0-66 are burn-in (10,000 iters, first 4,000 discarded)
+N_HUMAN = 50            # human individuals retained per region
+ARCHIVE_ARG = bool(int(config.get("archive_arg", 0)))
+
+# ---- external inputs (edit) --------------------------------------------------------------------
+SHARED_SITES = ("../../3_SharedVariation/1_Intersect/paralog_filtered/"
+                "shared_variants.SD_CNV_DUP_filtered.sites.txt")
+CANDIDATES = "misc_files/merged_candidate_snps.chrom_pos.txt"   # the 860 age >=4 Mya candidates
+SNP_INFO = "resources/all_shared_snps_ann.txt"                  # shared-SNP annotation (hg19)
+CHAIN = "resources/chains/b37tohg38.nochr.over.chain"           # b37 -> hg38 liftOver chain
+# -------------------------------------------------------------------------------------------------
+
+### REGIONS #######################################################################################
+
+# Regions are the staged merged VCFs, intersected with the 250 kb target list, minus regions
+# whose candidate SNP was lost in chimp recalling (SINGER has nothing to anchor on there --
+# see misc_files/excluded_regions.txt).
+staged = {os.path.basename(p)[: -len(".vcf.gz")] for p in glob.glob("merged_regions/*.vcf.gz")}
+target = {l.strip() for l in open("misc_files/non_overlapping_region_250kb_ids.txt") if l.strip()}
+
+excluded = set()
+if os.path.exists("misc_files/excluded_regions.txt"):
+    excluded = {l.split()[0] for l in open("misc_files/excluded_regions.txt")
+                if l.strip() and not l.startswith("#")}
+
+regions = sorted((staged & target) - excluded)
+
+### RESOURCES #####################################################################################
+
+# Optional per-region wall-clock table (hours) measured on a previous run, used to size the
+# time request. Without it every region asks the same default, which queues badly.
+_HOURS = {}
+if os.path.exists("misc_files/region_hours.json"):
+    _HOURS = json.load(open("misc_files/region_hours.json"))
+
+
+def singer_mem(wildcards, attempt):
+    """Memory in MB. Scales with the region's VCF size and with Ne.
+
+    SINGER holds the ARG in memory, so the requirement grows with both the number of
+    segregating sites and the depth of the genealogy. Measured on the same regions,
+    Ne = 100,000 needed roughly 3x the resident set of Ne = 20,000. An OOM is recoverable
+    (the region simply reruns), so `attempt` escalates rather than the floor being generous.
+    """
+    vcf = f"merged_regions_downsampled/{wildcards.region}.vcf"
+    mb = os.path.getsize(vcf) / 1e6 if os.path.exists(vcf) else 10.0
+    scale = 1.0 + 2.0 * (RUNS[wildcards.run]["ne"] - 20000) / 80000   # 1x at 20k, 3x at 100k
+    return int(min(max(4000, 300 * mb * scale) * attempt, 64000))
+
+
+def singer_time(wildcards, attempt):
+    """Wall clock in minutes, per region where a measured time is available."""
+    h = _HOURS.get(wildcards.region)
+    if h is None:
+        return int(min(1440, 720 * attempt))
+    scale = 1.0 + 0.5 * (RUNS[wildcards.run]["ne"] - 20000) / 80000   # deeper ARG, slower
+    mins = -(-int(h * scale * 1.5 * 60) // 30) * 30                   # round up to 30 min
+    return int(min(1440, max(120, mins * attempt)))
+
+
+### RULES #########################################################################################
+
+rule all:
+    input:
+        expand("results/{run}/tsps.txt", run=RUNS),
+        expand("results/{run}/tsps.hg38.bed", run=RUNS),
+
+
+# ---- shared preparation: run once, consumed by every run ----------------------------------------
+
+rule downsample:
+    """Retain N_HUMAN humans per region, preserving the focal SNP's genotype-class proportions."""
+    input:
+        vcf = "merged_regions/{region}.vcf.gz",
+        snp_pos = CANDIDATES,
+    output:
+        vcf = "merged_regions_downsampled/{region}.vcf.gz",
+        tbi = "merged_regions_downsampled/{region}.vcf.gz.tbi",
+        samples = "merged_regions/{region}.samples",
+        sites = "merged_regions/{region}.sites",
+        samples_downsampled = "merged_regions_downsampled/{region}.samples",
+    params:
+        n = N_HUMAN,
+    shell:
+        r"""
+        bcftools query -l {input.vcf} > {output.samples}
+        bcftools query -f '%CHROM\t%POS[\t%GT]\n' {input.vcf} > {output.sites}
+        python3 scripts/downsample_human_samples.py \
+            {output.samples} {output.sites} {input.snp_pos} {params.n} {output.samples_downsampled}
+        bcftools view -S {output.samples_downsampled} {input.vcf} -Oz \
+            | bcftools +fill-tags -Oz -- -t all \
+            | bcftools view -e 'AC==0' -Oz -o {output.vcf}
+        tabix {output.vcf}
+        """
+
+
+rule unzip_downsampled_vcf:
+    input:
+        vcf = "merged_regions_downsampled/{region}.vcf.gz",
+    output:
+        vcf = "merged_regions_downsampled/{region}.vcf",
+    shell:
+        "gunzip -c {input.vcf} > {output.vcf}"
+
+
+# ---- per run --------------------------------------------------------------------------------
+
+rule run_singer:
+    """Sample the posterior ARG for one region under one (Ne, seed) configuration.
+
+    Declaring the highest-index raw files rather than the .trees keeps sampling and
+    conversion separate, so the conversion can be redone without resampling.
+    """
+    input:
+        vcf = "merged_regions_downsampled/{region}.vcf",
+    output:
+        nodes    = "singer/{run}/{region}/{region}_nodes_%d.txt" % (LAST - 1),
+        branches = "singer/{run}/{region}/{region}_branches_%d.txt" % (LAST - 1),
+        muts     = "singer/{run}/{region}/{region}_muts_%d.txt" % (LAST - 1),
+        recombs  = "singer/{run}/{region}/{region}_recombs_%d.txt" % (LAST - 1),
+    params:
+        ne = lambda w: RUNS[w.run]["ne"],
+        seed = lambda w: RUNS[w.run]["seed"],
+        mu = MU,
+        n = N_SAMPLES,
+        thin = THIN,
+    resources:
+        time = singer_time,
+        mem = singer_mem,
+    shell:
+        r"""
+        start=$(echo {wildcards.region} | cut -d "_" -f 2)
+        end=$(echo {wildcards.region} | cut -d "_" -f 3)
+        singer_master \
+            -Ne {params.ne} -m {params.mu} -seed {params.seed} \
+            -vcf merged_regions_downsampled/{wildcards.region} \
+            -output singer/{wildcards.run}/{wildcards.region}/{wildcards.region} \
+            -start $start -end $end -n {params.n} -thin {params.thin}
+        """
+
+
+rule convert_to_tskit:
+    """Raw SINGER output -> tskit .trees, for the retained (post burn-in) samples.
+
+    Uses the patched converter: SINGER's bundled convert_to_tskit does not sort the
+    mutation table or compute mutation parents, and fails on strict tskit with
+    TSK_ERR_MUTATION_PARENT_AFTER_CHILD.
+    """
+    input:
+        nodes    = "singer/{run}/{region}/{region}_nodes_%d.txt" % (LAST - 1),
+        branches = "singer/{run}/{region}/{region}_branches_%d.txt" % (LAST - 1),
+        muts     = "singer/{run}/{region}/{region}_muts_%d.txt" % (LAST - 1),
+    output:
+        expand("singer/{{run}}/{{region}}/tskit/{{region}}_{idx}.trees",
+               idx=range(FIRST, LAST)),
+    params:
+        first = FIRST,
+        last = LAST,
+    shell:
+        r"""
+        python3 scripts/convert_to_tskit_fixed.py \
+            -input singer/{wildcards.run}/{wildcards.region}/{wildcards.region} \
+            -output singer/{wildcards.run}/{wildcards.region}/tskit/{wildcards.region} \
+            -start {params.first} -end {params.last} -step 1
+        """
+
+
+rule all_shared_metrics:
+    """Per-SNP TSP topology support, for every shared SNP in the region.
+
+    Scored at all shared SNPs rather than only the candidates, so the support landscape
+    around each locus is available (Figure 5B uses it). process_tsps restricts to the
+    candidate set.
+    """
+    input:
+        tree = "singer/{run}/{region}/tskit/{region}_%d.trees" % FIRST,
+        samples = "merged_regions_downsampled/{region}.samples",
+        all_shared = SHARED_SITES,
+    output:
+        out = "singer/{run}/{region}/{region}.all_shared_metrics.txt",
+    params:
+        start_index = FIRST,
+        end_index = LAST,
+    script:
+        "scripts/calc_tsp_all_shared.py"
+
+
+rule archive_arg:
+    """Optional: tar the raw ARG samples once the metrics exist, to cut the file count."""
+    input:
+        metrics = "singer/{run}/{region}/{region}.all_shared_metrics.txt",
+    output:
+        tar = "singer_arg/{run}/{region}.singer_arg.tar.zst",
+    shell:
+        r"""
+        mkdir -p $(dirname {output.tar})
+        tar --use-compress-program='zstd -3 -T0' \
+            -cf {output.tar} -C singer/{wildcards.run}/{wildcards.region} \
+            $(cd singer/{wildcards.run}/{wildcards.region} && ls *_nodes_*.txt *_branches_*.txt \
+              *_muts_*.txt *_recombs_*.txt *_coordinates.txt 2>/dev/null)
+        """
+
+
+rule process_tsps:
+    """Per-run TSP set: the candidate SNPs whose support exceeds the threshold.
+
+    This is the single-chain call. The reported set pools the three ne50000 chains, which
+    happens downstream in ../4_TSPRegions/2_ClusteringLD/aggregate_seeds.py.
+    """
+    input:
+        metrics = expand("singer/{{run}}/{region}/{region}.all_shared_metrics.txt",
+                         region=regions),
+        arg = (expand("singer_arg/{{run}}/{region}.singer_arg.tar.zst", region=regions)
+               if ARCHIVE_ARG else []),
+        candidates = CANDIDATES,
+        snp_info = SNP_INFO,
+        chain = CHAIN,
+    output:
+        all_candidates = "results/{run}/candidate_support.txt",
+        tsps = "results/{run}/tsps.txt",
+        bed = "results/{run}/tsps.hg38.bed",
+    params:
+        singer_dir = lambda w: f"singer/{w.run}",
+        tsp_threshold = 80,   # support must EXCEED this, in the run's LAST-FIRST posterior trees
+        gen_time = 29,
+    script:
+        "scripts/process_tsps.py"

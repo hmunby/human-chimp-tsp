@@ -1,0 +1,141 @@
+# Chimpanzee BAM/CRAM -> per-sample, per-chromosome multihetsep (.mhs) files.
+#
+# cobraa (PSMC+) takes multihetsep input, not the .psmcfa of classic PSMC, so this stage is the
+# equivalent of the fq2psmcfa step: per-sample consensus calling with a matched callability mask.
+#
+#   BAM/CRAM -> bcftools mpileup/call -> bamCaller.py -> per-chrom VCF + callability BED
+#            -> generate_multihetsep.py (callability + mappability mask) -> .mhs
+#
+# Two mask stringencies are produced, both consumed by ../3_Cobraa/:
+#   mhs/            mappability r = 0.50   -> the main cobraa fit
+#   mhs/stringent75 mappability r = 0.75   -> the high-stringency sensitivity fit
+#
+# Coverage: bamCaller.py needs each sample's mean depth to set its per-site depth cutoffs. It is
+# estimated once per sample from chromosome 20.
+
+#### INPUT PATHS (edit) ####
+# panTro6 / Clint_PTRv2 (GCA_002880755.3). Contigs carry GenBank names (CM009238.2 ...), which
+# misc_files/chr_chimp.txt maps to chimpanzee chromosome names. No HLA decoy.
+REFERENCE_FA = "resources/GCA_002880755.3_Clint_PTRv2_genomic.fa"
+
+# Mappability masks from ../1_MappabilityMask/ (SNPable, k=150, r=0.50 and r=0.75)
+MAPPABILITY_MASK = "resources/PanTro6_mappability_mask.150.50.bed"
+MAPPABILITY_MASK_STRINGENT = "resources/PanTro6_mappability_mask.150.75.bed"
+
+# msmc-tools (https://github.com/stschiff/msmc-tools), not bundled -- see README.
+# generate_multihetsep.py must carry the local --chr patch described there.
+BAM_CALLER = "scripts/bamCaller.py"
+GENERATE_MULTIHETSEP = "scripts/generate_multihetsep.py"
+
+# In-repo inputs (bundled)
+SAMPLE_POP_FILE = "misc_files/sample_subspecies.txt"      # Sample <TAB> subspecies (WES/EAS/CEN)
+UNRELATED_FILE = "misc_files/unrelated_samples.txt"       # unrelated individuals to keep
+CHROM_MAP_FILE = "misc_files/chr_chimp.txt"               # <GenBank contig> <chimp chromosome>
+
+# Samples held as CRAM rather than BAM (alignments live in bam/{subspecies}/)
+SAMPLES_CRAM = ["1031", "1034", "1064", "1076", "1078", "2047", "2059", "2073",
+                "SAMD00026329", "SAMD00026330", "SAMD00026331"]
+
+
+### SETUP ###
+# subspecies of every sample, restricted to the unrelated individuals
+sample_pop_dict = {}
+with open(SAMPLE_POP_FILE) as f:
+    for line in f:
+        if line.startswith("Sample"):
+            continue
+        sample, pop = line.strip().split("\t")
+        sample_pop_dict[sample] = pop
+
+with open(UNRELATED_FILE) as f:
+    unrelated = {line.strip() for line in f if line.strip()}
+samples = [s for s in sample_pop_dict if s in unrelated]
+
+# GenBank contig name per chimpanzee chromosome (autosomes; X is not used)
+chrom_dict = {}
+with open(CHROM_MAP_FILE) as f:
+    for line in f:
+        ref_chrom, chrom_num = line.strip().split(" ")
+        chrom_dict[chrom_num] = ref_chrom
+chroms = list(chrom_dict)
+
+
+def alignment(sample, pop):
+    """(alignment, index) for a sample, whichever format it is stored in."""
+    ext = "cram" if sample in SAMPLES_CRAM else "bam"
+    idx = "crai" if ext == "cram" else "bai"
+    return f"bam/{pop}/{sample}.{ext}", f"bam/{pop}/{sample}.{ext}.{idx}"
+
+
+def mean_coverage(path):
+    with open(path) as f:
+        return float(f.readline())
+
+
+### RULES ###
+rule all:
+    input:
+        [f"{sample_pop_dict[s]}/{s}/mhs/chr{c}.mhs" for s in samples for c in chroms],
+        [f"{sample_pop_dict[s]}/{s}/mhs/stringent75/chr{c}.mhs" for s in samples for c in chroms]
+
+
+# Mean depth on chromosome 20, used to set bamCaller.py's depth cutoffs.
+rule get_coverage:
+    input:
+        aln = lambda w: alignment(w.samplename, w.zpop)[0]
+    output:
+        "bam/{zpop}/{samplename}.coverage.txt"
+    params:
+        chrom_ref = chrom_dict["20"]
+    resources:
+        mem = 4000
+    shell:
+        r"""
+        samtools depth -r {params.chrom_ref} {input.aln} | awk '{{sum += $3}} END {{print sum / NR}}' > {output}
+        """
+
+
+# Consensus call one chromosome: VCF of variant sites plus the callability BED of sites that
+# passed the depth filters. Both are required to build the multihetsep.
+rule convert_bam_to_vcf_and_bed:
+    input:
+        index = lambda w: alignment(w.samplename, w.zpop)[1],
+        aln = lambda w: alignment(w.samplename, w.zpop)[0],
+        reference = REFERENCE_FA,
+        coverage = "bam/{zpop}/{samplename}.coverage.txt"
+    output:
+        vcf = "{zpop}/{samplename}/vcf_beds/chr{chrom}.vcf.gz",
+        bed = "{zpop}/{samplename}/vcf_beds/chr{chrom}.bed.gz"
+    params:
+        coverage = lambda w: mean_coverage(f"bam/{w.zpop}/{w.samplename}.coverage.txt"),
+        chrom_ref = lambda w: chrom_dict[w.chrom]
+    shell:
+        "bcftools mpileup -q 20 -Q 20 -C 50 -r {params.chrom_ref} -f {input.reference} {input.aln}"
+        " | bcftools call -c -V indels"
+        " | " + BAM_CALLER + " {params.coverage} {output.bed}"
+        " | gzip -c > {output.vcf}"
+
+
+# --chr renames the output to chimpanzee chromosome names (the reference uses GenBank contigs).
+rule convert_vcfs_beds_to_mhs:
+    input:
+        vcf = "{zpop}/{samplename}/vcf_beds/chr{chrom}.vcf.gz",
+        bed = "{zpop}/{samplename}/vcf_beds/chr{chrom}.bed.gz",
+        mappability = MAPPABILITY_MASK
+    output:
+        "{zpop}/{samplename}/mhs/chr{chrom}.mhs"
+    shell:
+        "python " + GENERATE_MULTIHETSEP + " --mask={input.bed} --mask={input.mappability}"
+        " --chr={wildcards.chrom} {input.vcf} > {output}"
+
+
+rule convert_vcfs_beds_to_mhs_stringent:
+    input:
+        vcf = "{zpop}/{samplename}/vcf_beds/chr{chrom}.vcf.gz",
+        bed = "{zpop}/{samplename}/vcf_beds/chr{chrom}.bed.gz",
+        mappability = MAPPABILITY_MASK_STRINGENT
+    output:
+        "{zpop}/{samplename}/mhs/stringent75/chr{chrom}.mhs"
+    shell:
+        "python " + GENERATE_MULTIHETSEP + " --mask={input.bed} --mask={input.mappability}"
+        " --chr={wildcards.chrom} {input.vcf} > {output}"

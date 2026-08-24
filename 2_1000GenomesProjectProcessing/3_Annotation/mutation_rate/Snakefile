@@ -1,0 +1,38 @@
+# Build the genome-wide mutation-rate annotation table from the Roulette per-chromosome rate VCFs.
+# Output: annot_table_genome.txt.gz (CHROM,POS,REF,ALT,MR), used by the annotation driver to add the
+# MR INFO field. hg19, autosomes only.
+
+# ---- inputs (edit) ------------------------------------------------------------------------------
+# Roulette hg19 autosome rate VCFs (v5.2, TFBS correction). See download_roulette.sh.
+ROULETTE_DIR = "resources/roulette/autosomes"   # hg19_chr{N}_rate_v5.2_TFBS_correction_sorted.vcf.gz
+# ------------------------------------------------------------------------------------------------
+
+rule all:
+    input:
+        "annot_table_genome.txt.gz"
+
+# Per-chromosome: extract CHROM,POS,REF,ALT,MR (raw Roulette rate) from the rate VCF.
+rule make_annotation_files:
+    input:
+        file = ROULETTE_DIR + "/hg19_chr{chrom}_rate_v5.2_TFBS_correction_sorted.vcf.gz"
+    output:
+        file = temporary("annot_table_chr{chrom}.txt.gz")
+    shell:
+        r"""
+        bcftools query -f '%CHROM\t%POS\t%REF\t%ALT\t%MR\n' {input} > annot_table_chr{wildcards.chrom}.txt
+        bgzip annot_table_chr{wildcards.chrom}.txt
+        tabix -s1 -b2 -e2 annot_table_chr{wildcards.chrom}.txt.gz
+        """
+
+# Concatenate the per-chromosome tables (chr1..22) into the genome-wide table.
+rule make_genome_file:
+    input:
+        expand("annot_table_chr{chrom}.txt.gz", chrom=range(1, 23))
+    output:
+        "annot_table_genome.txt.gz"
+    shell:
+        r"""
+        zcat {input} > annot_table_genome.txt
+        bgzip annot_table_genome.txt
+        tabix -s1 -b2 -e2 annot_table_genome.txt.gz
+        """
